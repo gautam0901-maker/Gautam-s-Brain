@@ -1,0 +1,39 @@
+name: hidden_ai_app
+description: A Flutter app to uncover the latest AI, ML, and AGI research before it hits the market.
+publish_to: 'none' # Remove this line if you wish to publish to pub.dev
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  # For making API calls to arXiv
+  http: ^1.6.0
+  
+  # For parsing the Atom XML response from arXiv
+  xml: ^6.6.1
+
+  # Basic Material Design icons
+  cupertino_icons: ^1.0.6
+  flutter_card_swiper: ^7.2.0
+  shared_preferences: ^2.5.4
+  url_launcher: ^6.3.2
+  google_generative_ai: ^0.4.7
+  share_plus: ^12.0.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+  flutter_launcher_icons: ^0.14.4
+
+flutter:
+  uses-material-design: true
+
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: true
+  image_path: "images/a.png"
