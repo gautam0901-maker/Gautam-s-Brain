@@ -17,6 +17,21 @@ class HiddenAIApp extends StatelessWidget {
         brightness: Brightness.dark,
         primarySwatch: Colors.deepPurple,
         useMaterial3: true,
+        // Transparent scaffold lets AnimatedAuroraBackground show through everywhere.
+        scaffoldBackgroundColor: const Color(0xFF03040A),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          scrolledUnderElevation: 0,
+          surfaceTintColor: Colors.transparent,
+        ),
+        splashFactory: InkRipple.splashFactory,
+        pageTransitionsTheme: const PageTransitionsTheme(
+          builders: {
+            TargetPlatform.android: CupertinoPageTransitionsBuilder(),
+            TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+          },
+        ),
       ),
       home: const TechFeedScreen(),
     );
