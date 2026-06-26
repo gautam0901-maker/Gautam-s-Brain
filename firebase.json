@@ -1,0 +1,42 @@
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "focus-c6659",
+          "appId": "1:73326190072:android:5cd4c55f9fae3d43c38a0d",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "focus-c6659",
+          "configurations": {
+            "android": "1:73326190072:android:5cd4c55f9fae3d43c38a0d",
+            "ios": "1:73326190072:ios:75051a40dee7ac9ec38a0d",
+            "macos": "1:73326190072:ios:75051a40dee7ac9ec38a0d",
+            "web": "1:73326190072:web:e01f8292116bbd5bc38a0d",
+            "windows": "1:73326190072:web:22c435fa87c35266c38a0d"
+          }
+        }
+      }
+    }
+  },
+  "hosting": {
+    "public": "web_landing",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "rewrites": [
+      { "source": "/p", "destination": "/index.html" },
+      { "source": "/p/**", "destination": "/index.html" }
+    ],
+    "headers": [
+      {
+        "source": "/.well-known/assetlinks.json",
+        "headers": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Cache-Control", "value": "public, max-age=3600" }
+        ]
+      }
+    ]
+  }
+}

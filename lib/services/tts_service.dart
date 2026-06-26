@@ -1,0 +1,184 @@
+// TtsService — natural, calm, slow read-aloud for articles.
+//
+// Designed for the "train / falling asleep" use case: low speech rate,
+// the device's highest-quality available voice, and a sentence-by-sentence
+// engine so we know WHICH sentence is being spoken (used by the player UI
+// to highlight + to let the user "search this" on whatever they just heard).
+
+import 'dart:async';
+import 'package:flutter/foundation.dart';
+import 'package:flutter_tts/flutter_tts.dart';
+
+class TtsService {
+  TtsService._();
+  static final TtsService instance = TtsService._();
+
+  final FlutterTts _tts = FlutterTts();
+  bool _inited = false;
+
+  // Sentence queue for the current article.
+  List<String> _sentences = [];
+  int _index = 0;
+  bool _isPlaying = false;
+  bool _stopped = true;
+
+  /// Emits the index of the sentence currently being spoken so the UI can
+  /// highlight it and offer "search this".
+  final ValueNotifier<int> currentSentence = ValueNotifier<int>(-1);
+  final ValueNotifier<bool> isPlaying = ValueNotifier<bool>(false);
+
+  List<String> get sentences => _sentences;
+
+  Future<void> _init() async {
+    if (_inited) return;
+    // Slow + calm. 0.40 ≈ relaxed narration; default is ~0.5 and sounds rushed.
+    await _tts.setSpeechRate(0.40);
+    await _tts.setPitch(0.96); // very slightly lower = warmer, less robotic
+    await _tts.setVolume(1.0);
+    // Prefer a high-quality / network voice if the device has one. We scan
+    // for en-US voices and pick the one most likely to be neural.
+    try {
+      final voices = (await _tts.getVoices) as List?;
+      if (voices != null) {
+        Map? best;
+        for (final v in voices) {
+          final name = (v['name'] ?? '').toString().toLowerCase();
+          final locale = (v['locale'] ?? '').toString().toLowerCase();
+          if (!locale.startsWith('en')) continue;
+          // Heuristics: Google "neural"/"wavenet"/"network" voices sound best.
+          final isNice = name.contains('neural') ||
+              name.contains('wavenet') ||
+              name.contains('network') ||
+              name.contains('en-us-x');
+          if (isNice) {
+            best = v;
+            break;
+          }
+          best ??= v;
+        }
+        if (best != null) {
+          await _tts.setVoice({
+            'name': best['name'].toString(),
+            'locale': best['locale'].toString(),
+          });
+        }
+      }
+    } catch (_) {}
+
+    _tts.setCompletionHandler(() {
+      // Move to the next sentence automatically.
+      if (_stopped) return;
+      _index++;
+      if (_index < _sentences.length) {
+        _speakCurrent();
+      } else {
+        _isPlaying = false;
+        isPlaying.value = false;
+        currentSentence.value = -1;
+      }
+    });
+    _tts.setCancelHandler(() {
+      _isPlaying = false;
+      isPlaying.value = false;
+    });
+    _inited = true;
+  }
+
+  /// Splits text into speakable sentences. Keeps them short enough that the
+  /// completion handler fires often (better highlight granularity).
+  static List<String> splitSentences(String text) {
+    final cleaned = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (cleaned.isEmpty) return [];
+    // Split on sentence-ending punctuation followed by a space.
+    final raw = cleaned.split(RegExp(r'(?<=[.!?])\s+'));
+    final out = <String>[];
+    for (final s in raw) {
+      final t = s.trim();
+      if (t.isEmpty) continue;
+      // Break very long sentences on commas to keep chunks digestible.
+      if (t.length > 240) {
+        out.addAll(t.split(RegExp(r'(?<=,)\s+')).where((e) => e.trim().isNotEmpty));
+      } else {
+        out.add(t);
+      }
+    }
+    return out;
+  }
+
+  Future<void> start(String text, {int fromIndex = 0}) async {
+    await _init();
+    await stop();
+    _sentences = splitSentences(text);
+    if (_sentences.isEmpty) return;
+    _index = fromIndex.clamp(0, _sentences.length - 1);
+    _stopped = false;
+    _isPlaying = true;
+    isPlaying.value = true;
+    await _speakCurrent();
+  }
+
+  Future<void> _speakCurrent() async {
+    if (_index < 0 || _index >= _sentences.length) return;
+    currentSentence.value = _index;
+    await _tts.speak(_sentences[_index]);
+  }
+
+  Future<void> pause() async {
+    _isPlaying = false;
+    isPlaying.value = false;
+    await _tts.stop(); // pause() is unreliable across engines; stop + resume index
+  }
+
+  Future<void> resume() async {
+    if (_sentences.isEmpty) return;
+    _stopped = false;
+    _isPlaying = true;
+    isPlaying.value = true;
+    await _speakCurrent();
+  }
+
+  Future<void> next() async {
+    if (_index < _sentences.length - 1) {
+      _index++;
+      await _tts.stop();
+      await _speakCurrent();
+    }
+  }
+
+  Future<void> previous() async {
+    if (_index > 0) {
+      _index--;
+      await _tts.stop();
+      await _speakCurrent();
+    }
+  }
+
+  Future<void> jumpTo(int i) async {
+    if (i < 0 || i >= _sentences.length) return;
+    _index = i;
+    _stopped = false;
+    _isPlaying = true;
+    isPlaying.value = true;
+    await _tts.stop();
+    await _speakCurrent();
+  }
+
+  String currentSentenceText() {
+    if (_index < 0 || _index >= _sentences.length) return '';
+    return _sentences[_index];
+  }
+
+  Future<void> stop() async {
+    _stopped = true;
+    _isPlaying = false;
+    isPlaying.value = false;
+    currentSentence.value = -1;
+    // Clear the queue so the NEXT article starts fresh instead of resuming
+    // this one. (pause() deliberately keeps the queue for resume.)
+    _sentences = [];
+    _index = 0;
+    await _tts.stop();
+  }
+
+  bool get playing => _isPlaying;
+}

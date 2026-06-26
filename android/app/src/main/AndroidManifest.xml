@@ -1,9 +1,22 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    
+
+    <!-- Required to fetch news, AI explanations, and sign in. -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Required for HapticFeedback.mediumImpact() on swipes/taps.
+         Install-time permission, no runtime prompt. Silent fail without it. -->
+    <uses-permission android:name="android.permission.VIBRATE"/>
+    <!-- Stage T: scheduled local notifications. Android 13+ requires the
+         runtime POST_NOTIFICATIONS prompt (handled by permission_handler);
+         SCHEDULE_EXACT_ALARM is for repeating reminders. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+    <!-- Used ONLY by the "📍 Nearby" chip in the News tab. Coarse-only,
+         foreground-only, never background, no fine GPS, no tracking. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
 
     <application
-        android:label="Gautam's Brain"
+        android:label="Glint"
         android:name="${applicationName}"
         android:icon="@mipmap/launcher_icon">
         <activity
@@ -22,6 +35,24 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+            <!-- Stage J: Android App Link. Verified via /.well-known/assetlinks.json
+                 hosted at focus-c6659.web.app. When tapped from any app, opens
+                 directly in ours (no chooser, no browser bounce). -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="https"
+                      android:host="focus-c6659.web.app"
+                      android:pathPrefix="/p"/>
+            </intent-filter>
+            <!-- Custom scheme for direct in-app/in-org sharing (no domain needed). -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="hiddenai"/>
             </intent-filter>
         </activity>
         <meta-data

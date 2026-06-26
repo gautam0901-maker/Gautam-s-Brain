@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy Policy — Hidden AI</title>
+  <style>
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #05060F, #0B1A3F, #1C0B40); color: #fff;
+      min-height: 100vh; padding: 40px 24px; line-height: 1.6; }
+    .wrap { max-width: 720px; margin: 0 auto; }
+    h1 { font-size: 32px; margin: 0 0 8px; }
+    .meta { color: rgba(255,255,255,.5); font-size: 13px; margin-bottom: 32px; }
+    h2 { font-size: 20px; margin-top: 32px; color: #5CDBD3; }
+    p, li { color: rgba(255,255,255,.85); font-size: 15px; }
+    code { background: rgba(255,255,255,.08); padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+    a { color: #5CDBD3; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Privacy Policy</h1>
+  <p class="meta">Hidden AI Tech · Last updated June 2026</p>
+
+  <p>This document explains what Hidden AI Tech (“the app”) collects, why, and what we don’t do. We've kept it short on purpose.</p>
+
+  <h2>What we collect</h2>
+  <ul>
+    <li><strong>Account info</strong>: when you sign in with Google, we receive your name, email address, profile photo URL, and Google account ID. Stored in Firebase Authentication.</li>
+    <li><strong>Profile</strong>: your selected profession, interest topics, and country. Stored at <code>users/{your-id}</code> in Firestore. Only you can read or write your own profile.</li>
+    <li><strong>Comments you post</strong>: text, your display name, your photo URL, and a timestamp. Visible to everyone using the app.</li>
+    <li><strong>Local-only data</strong>: pinned topics, vault saves, and which cards you've already seen. Stored only on your device via SharedPreferences. We can’t see this.</li>
+    <li><strong>Coarse location</strong> (only if you tap the Nearby chip and grant permission): the latitude/longitude of your device, reverse-geocoded to a city name. Cached on your device for 24 hours. We don’t send raw coordinates anywhere.</li>
+  </ul>
+
+  <h2>What we don’t collect</h2>
+  <ul>
+    <li>No analytics SDKs, no crash reporting, no marketing pixels.</li>
+    <li>No fine GPS, no background location, no movement history.</li>
+    <li>No contacts, no microphone, no camera, no SMS.</li>
+    <li>We do not sell, rent, or share your data with advertisers or data brokers.</li>
+  </ul>
+
+  <h2>Third-party services we call</h2>
+  <ul>
+    <li><strong>Firebase</strong> (Google): authentication, profile storage, comment storage. Subject to <a href="https://firebase.google.com/support/privacy">Firebase Privacy</a>.</li>
+    <li><strong>Pollinations AI</strong>: the prompt you submit (chat questions, "Explain Simply" presets) is sent anonymously to <code>text.pollinations.ai</code> to generate explanations. Your account info is never sent.</li>
+    <li><strong>News sources</strong>: arXiv, GitHub, Hacker News, Reddit, Dev.to, and ~22 RSS feeds. Each request is anonymous, sent only when you load the relevant tab.</li>
+    <li><strong>Image scraping</strong>: when a card needs a thumbnail we fetch the article page once to read its <code>og:image</code> meta tag. The publisher's server sees an anonymous request.</li>
+    <li><strong>Google News RSS</strong>: when you tap "Nearby", we send your city name (not raw coordinates) to <code>news.google.com</code> to get a list of headlines.</li>
+  </ul>
+
+  <h2>Your controls</h2>
+  <ul>
+    <li><strong>Sign out</strong> any time from Settings. Your local data stays on the device until you reinstall.</li>
+    <li><strong>Edit profile</strong> from Settings to change profession, topics, or country.</li>
+    <li><strong>Clear seen history</strong> and <strong>empty intel vault</strong> are one-tap actions in Settings.</li>
+    <li><strong>Delete your account + data</strong>: email us (see contact below) and we'll remove your Firestore user document and all comments you've posted.</li>
+    <li><strong>Revoke location permission</strong> any time from your phone's Settings → Apps → Hidden AI → Permissions.</li>
+  </ul>
+
+  <h2>Data retention</h2>
+  <ul>
+    <li>Profile and comments persist until you delete them or your account.</li>
+    <li>The Nearby city cache is automatically discarded after 24 hours.</li>
+    <li>Firebase Authentication records are kept until you request deletion.</li>
+  </ul>
+
+  <h2>Children's privacy</h2>
+  <p>Hidden AI is not directed to children under 13. We do not knowingly collect data from them. If you believe a child has provided personal data, contact us and we'll delete it.</p>
+
+  <h2>Changes to this policy</h2>
+  <p>Updates will be posted at this URL with a new "last updated" date. Significant changes will trigger an in-app notice on the next open.</p>
+
+  <h2>Contact</h2>
+  <p>Questions, deletion requests, or anything else: <a href="mailto:mageshrakup@gmail.com">mageshrakup@gmail.com</a></p>
+</div>
+</body>
+</html>
