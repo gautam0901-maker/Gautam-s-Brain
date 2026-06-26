@@ -45,6 +45,19 @@ class CloudSyncService {
     } catch (_) {}
   }
 
+  /// Append one highlight under users/{uid}/highlights (auto-id docs).
+  Future<void> pushHighlight(String articleUrl, String text) async {
+    final uid = _uid;
+    if (uid == null) return;
+    try {
+      await _users.doc(uid).collection('highlights').add({
+        'url': articleUrl,
+        'text': text,
+        'created': FieldValue.serverTimestamp(),
+      });
+    } catch (_) {}
+  }
+
   Future<void> pushReadLater(List<String> jsonItems) async {
     final uid = _uid;
     if (uid == null) return;

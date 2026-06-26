@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
+import 'package:path_provider/path_provider.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -14,6 +16,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:share_plus/share_plus.dart';
 import 'onboarding_screen.dart';
 import '../main.dart' show tabTapTicker;
+import '../services/activity_log.dart';
 import '../services/ai_service.dart';
 import '../services/auth_service.dart';
 import '../services/cloud_sync_service.dart';
@@ -580,6 +583,35 @@ Future<void> removeFromReadLater(String title) async {
   unawaited(CloudSyncService.instance.pushReadLater(list));
 }
 
+// ============================================================
+// HIGHLIGHTS — text the user selected & saved from an article.
+// Keyed by article URL hash; mirrored to cloud.
+// ============================================================
+String _highlightKey(String url) => 'highlights_${url.hashCode}';
+
+Future<List<String>> loadHighlights(String url) async {
+  final prefs = await SharedPreferences.getInstance();
+  return prefs.getStringList(_highlightKey(url)) ?? <String>[];
+}
+
+Future<void> addHighlight(String url, String text) async {
+  final t = text.trim();
+  if (t.isEmpty) return;
+  final prefs = await SharedPreferences.getInstance();
+  final list = prefs.getStringList(_highlightKey(url)) ?? <String>[];
+  if (list.contains(t)) return;
+  list.add(t);
+  await prefs.setStringList(_highlightKey(url), list);
+  unawaited(CloudSyncService.instance.pushHighlight(url, t));
+}
+
+Future<void> removeHighlight(String url, String text) async {
+  final prefs = await SharedPreferences.getInstance();
+  final list = prefs.getStringList(_highlightKey(url)) ?? <String>[];
+  list.remove(text);
+  await prefs.setStringList(_highlightKey(url), list);
+}
+
 /// True if this item's source matches any muted entry.
 bool isSourceMuted(Map<String, String> item) {
   if (mutedSourcesCache.isEmpty) return false;
@@ -962,6 +994,8 @@ Future<void> saveItemToVault(Map<String, String> paper) async {
   await PersonalizationService.instance.refresh();
   unawaited(CloudSyncService.instance.pushVault(saved));
   unawaited(CloudSyncService.instance.pushBehavior(saves: saved.length));
+  unawaited(ActivityLog.instance
+      .record('save', category, DateTime.now().millisecondsSinceEpoch));
 }
 
 // ============================================================
@@ -1054,6 +1088,31 @@ Future<void> markItemDisliked(Map<String, String> item) async {
   await prefs.setStringList('disliked_titles', stored);
   PersonalizationService.instance.refresh();
   unawaited(CloudSyncService.instance.pushDislikes(stored));
+}
+
+/// AA.11: Render a pretty quote card for [item] to a PNG and open the share
+/// sheet with it. Uses an offscreen RepaintBoundary so nothing flashes on
+/// screen. Falls back to text share if rendering fails.
+Future<void> shareAsImage(BuildContext context, Map<String, String> item) async {
+  final messenger = ScaffoldMessenger.of(context);
+  messenger.showSnackBar(const SnackBar(
+    content: Text('🎨 Creating your card…'),
+    duration: Duration(milliseconds: 1200),
+  ));
+  try {
+    final boundary = _QuoteCardPainter(item: item);
+    final bytes = await boundary.render();
+    if (bytes == null) throw Exception('render failed');
+    final dir = await getTemporaryDirectory();
+    final file = File('${dir.path}/glint_card_${item['title'].hashCode}.png');
+    await file.writeAsBytes(bytes);
+    await Share.shareXFiles([XFile(file.path)],
+        text: '${item['title']}\n\n— shared via Glint');
+  } catch (_) {
+    // Fallback: plain text share.
+    final url = item['url'] ?? '';
+    Share.share('${item['title']}\n\n$url\n\n— shared via Glint');
+  }
 }
 
 /// Starts Live Listen for a single item from anywhere (long-press menus).
@@ -1231,6 +1290,11 @@ Future<String?> showCardActionSheet(
                   '${item['title']}\n\n${deep.isNotEmpty ? deep : url}',
                   subject: item['title']);
               Navigator.pop(sheetCtx, 'shared');
+            }),
+            action(Icons.image_outlined, 'Share as image',
+                'A pretty quote card', glintWarmAccent(sheetCtx), () {
+              Navigator.pop(sheetCtx);
+              shareAsImage(context, item);
             }),
             if (source.isNotEmpty)
               action(Icons.block, 'Mute $source',
@@ -3075,6 +3139,7 @@ class _VaultScreenState extends State<VaultScreen> {
                 ),
               ),
               const SizedBox(height: 12),
+              if (_vaultMode == 'saved')
               SizedBox(
                 height: 44,
                 child: ListView.builder(
@@ -3231,6 +3296,109 @@ class _DetailScreenState extends State<DetailScreen> {
   bool _userScrolled = false;
   double _savedOffset = 0;
 
+  // AA.5: saved highlights for this article.
+  List<String> _articleHighlights = [];
+  Future<void> _loadHighlights() async {
+    final url = widget.paper['url'] ?? '';
+    if (url.isEmpty) return;
+    final h = await loadHighlights(url);
+    if (mounted) setState(() => _articleHighlights = h);
+  }
+
+  /// SelectableText with a "Highlight" action in the selection toolbar.
+  Widget _selectableBody(String text, TextStyle style) {
+    return SelectableText(
+      text,
+      style: style,
+      contextMenuBuilder: (ctx, state) {
+        final items = List.of(state.contextMenuButtonItems);
+        final sel = state.textEditingValue.selection;
+        final picked = (sel.isValid && !sel.isCollapsed)
+            ? state.textEditingValue.text.substring(sel.start, sel.end)
+            : '';
+        if (picked.trim().isNotEmpty) {
+          items.insert(
+            0,
+            ContextMenuButtonItem(
+              label: 'Highlight',
+              onPressed: () async {
+                ContextMenuController.removeAny();
+                final url = widget.paper['url'] ?? '';
+                await addHighlight(url, picked);
+                await _loadHighlights();
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content: Text('✨ Highlight saved'),
+                    behavior: SnackBarBehavior.floating,
+                    duration: Duration(milliseconds: 1400),
+                  ));
+                }
+              },
+            ),
+          );
+        }
+        return AdaptiveTextSelectionToolbar.buttonItems(
+          anchors: state.contextMenuAnchors,
+          buttonItems: items,
+        );
+      },
+    );
+  }
+
+  Widget _highlightsPanel() => GlassPanel(
+        padding: const EdgeInsets.all(18),
+        borderRadius: 14,
+        blurSigma: 12,
+        tint: Colors.amberAccent,
+        tintOpacity: 0.08,
+        borderColor: Colors.amberAccent.withOpacity(0.35),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(children: [
+              const Icon(Icons.format_quote, color: Colors.amberAccent, size: 18),
+              const SizedBox(width: 6),
+              Text("YOUR HIGHLIGHTS",
+                  style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.amberAccent,
+                      letterSpacing: 1.5)),
+            ]),
+            const SizedBox(height: 12),
+            ..._articleHighlights.map((h) => Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: 3,
+                        height: 18,
+                        margin: const EdgeInsets.only(top: 3, right: 10),
+                        color: Colors.amberAccent,
+                      ),
+                      Expanded(
+                        child: Text(h,
+                            style: TextStyle(
+                                color: glintText(context, 0.85),
+                                fontSize: 14,
+                                height: 1.5,
+                                fontStyle: FontStyle.italic)),
+                      ),
+                      GestureDetector(
+                        onTap: () async {
+                          await removeHighlight(widget.paper['url'] ?? '', h);
+                          await _loadHighlights();
+                        },
+                        child: Icon(Icons.close, size: 16, color: glintText(context, 0.4)),
+                      ),
+                    ],
+                  ),
+                )),
+          ],
+        ),
+      );
+
   String get _scrollKey {
     final u = widget.paper['url'] ?? widget.paper['title'] ?? '';
     return 'scrollpos_${u.hashCode}';
@@ -3241,6 +3409,10 @@ class _DetailScreenState extends State<DetailScreen> {
     super.initState();
     _scrollCtl.addListener(_onScroll);
     _restoreScrollPosition();
+    _loadHighlights();
+    // Log a "read" for the Weekly Recap (label = source).
+    unawaited(ActivityLog.instance.record(
+        'read', widget.paper['source'] ?? '', DateTime.now().millisecondsSinceEpoch));
     final url = widget.paper['url'] ?? '';
     if (url.isNotEmpty) {
       OgImageService.fetchMeta(url).then((meta) {
@@ -3531,6 +3703,11 @@ class _DetailScreenState extends State<DetailScreen> {
                       const SizedBox(height: 16),
                       SpringIn(delayMs: 100, child: _fullArticlePanel(_articleBody!)),
                     ],
+                    // 2b. YOUR HIGHLIGHTS — saved selections.
+                    if (_articleHighlights.isNotEmpty) ...[
+                      const SizedBox(height: 16),
+                      _highlightsPanel(),
+                    ],
                     const SizedBox(height: 24),
                     // 3. AI INTERROGATE.
                     SpringIn(delayMs: 200, child: _interrogatePanel()),
@@ -3634,9 +3811,8 @@ class _DetailScreenState extends State<DetailScreen> {
                     color: glintText(context, 0.6),
                     letterSpacing: 1.5)),
             const SizedBox(height: 16),
-            Text(text,
-                style: TextStyle(
-                    fontSize: 16, color: glintText(context, 0.85), height: 1.8)),
+            _selectableBody(text,
+                TextStyle(fontSize: 16, color: glintText(context, 0.85), height: 1.8)),
           ],
         ),
       );
@@ -3662,8 +3838,14 @@ class _DetailScreenState extends State<DetailScreen> {
                       letterSpacing: 1.5)),
             ]),
             const SizedBox(height: 12),
-            Text(text,
-                style: TextStyle(fontSize: 16, color: glintText(context), height: 1.7)),
+            _selectableBody(text,
+                TextStyle(fontSize: 16, color: glintText(context), height: 1.7)),
+            const SizedBox(height: 8),
+            Text("Tip: select any text to save a highlight.",
+                style: TextStyle(
+                    fontSize: 11,
+                    color: glintText(context, 0.4),
+                    fontStyle: FontStyle.italic)),
           ],
         ),
       );
@@ -4407,6 +4589,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 },
               ),
               const SizedBox(height: 16),
+              _weeklyRecapCard(),
+              const SizedBox(height: 16),
               GlassPanel(
                 padding: const EdgeInsets.all(20),
                 tint: Colors.purpleAccent,
@@ -4732,6 +4916,65 @@ class _SettingsScreenState extends State<SettingsScreen> {
               fontSize: 12)),
     );
   }
+
+  // AA.8: "Your Week" recap — reads, saves, and top categories.
+  Widget _weeklyRecapCard() {
+    return FutureBuilder<WeekStats>(
+      future: ActivityLog.instance.weekStats(DateTime.now().millisecondsSinceEpoch),
+      builder: (context, snap) {
+        final s = snap.data;
+        if (s == null || s.isEmpty) return const SizedBox.shrink();
+        return GlassPanel(
+          padding: const EdgeInsets.all(20),
+          tint: glintWarmAccent(context),
+          tintOpacity: 0.10,
+          borderColor: glintWarmAccent(context).withOpacity(0.35),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(children: [
+                Icon(Icons.insights, color: glintWarmAccent(context), size: 18),
+                const SizedBox(width: 8),
+                Text("YOUR WEEK",
+                    style: TextStyle(
+                        color: glintWarmAccent(context),
+                        letterSpacing: 1.4,
+                        fontWeight: FontWeight.bold)),
+              ]),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  _recapStat('${s.reads}', 'read'),
+                  const SizedBox(width: 24),
+                  _recapStat('${s.saves}', 'saved'),
+                ],
+              ),
+              if (s.topLabels.isNotEmpty) ...[
+                const SizedBox(height: 14),
+                Text(
+                  "Mostly ${s.topLabels.first.key}"
+                  "${s.topLabels.length > 1 ? ' and ${s.topLabels[1].key}' : ''}.",
+                  style: TextStyle(color: glintText(context, 0.7), fontSize: 14),
+                ),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _recapStat(String value, String label) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(value,
+              style: TextStyle(
+                  color: glintAccent(context),
+                  fontSize: 28,
+                  fontWeight: FontWeight.bold)),
+          Text(label, style: TextStyle(color: glintText(context, 0.55), fontSize: 13)),
+        ],
+      );
 
   Widget _signInCard() {
     return Column(
@@ -5377,6 +5620,72 @@ class TtsPlayerBar extends StatelessWidget {
 // Order tried: Gemini → Cerebras → Groq → Pollinations (keyless).
 // More keys = more reliable; the app uses whichever is available.
 // ============================================================
+// ============================================================
+// QUOTE CARD PAINTER (AA.11) — draws a 1080×1080 shareable card with
+// dart:ui Canvas (no widget tree needed, so it renders headless).
+// ============================================================
+class _QuoteCardPainter {
+  final Map<String, String> item;
+  _QuoteCardPainter({required this.item});
+
+  Future<Uint8List?> render() async {
+    const size = 1080.0;
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder, const Rect.fromLTWH(0, 0, size, size));
+
+    // Background gradient (Glint navy → teal).
+    final bgPaint = Paint()
+      ..shader = const LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [Color(0xFF050B14), Color(0xFF0C2A2E), Color(0xFF12403E)],
+      ).createShader(const Rect.fromLTWH(0, 0, size, size));
+    canvas.drawRect(const Rect.fromLTWH(0, 0, size, size), bgPaint);
+
+    // Accent quote mark.
+    _drawText(canvas, '“', const Offset(70, 60), 220,
+        const Color(0xFF2BD9CD), FontWeight.w900, maxWidth: 300);
+
+    // Title (the quote).
+    final title = (item['title'] ?? '').trim();
+    _drawText(canvas, title, const Offset(80, 300), 56, Colors.white,
+        FontWeight.w800, maxWidth: 920, maxLines: 7);
+
+    // Source line.
+    final source = (item['source'] ?? '').trim();
+    if (source.isNotEmpty) {
+      _drawText(canvas, '— $source', const Offset(80, 880), 34,
+          const Color(0xFF8FE9E3), FontWeight.w600, maxWidth: 920);
+    }
+
+    // Glint branding bottom-right.
+    _drawText(canvas, 'Glint', const Offset(820, 980), 40,
+        const Color(0xFF2BD9CD), FontWeight.w900, maxWidth: 200);
+
+    final picture = recorder.endRecording();
+    final img = await picture.toImage(size.toInt(), size.toInt());
+    final data = await img.toByteData(format: ui.ImageByteFormat.png);
+    return data?.buffer.asUint8List();
+  }
+
+  void _drawText(Canvas canvas, String text, Offset at, double fontSize,
+      Color color, FontWeight weight,
+      {double maxWidth = 900, int maxLines = 3}) {
+    final builder = ui.ParagraphBuilder(ui.ParagraphStyle(
+      textAlign: TextAlign.left,
+      fontSize: fontSize,
+      fontWeight: weight,
+      maxLines: maxLines,
+      ellipsis: '…',
+    ))
+      ..pushStyle(ui.TextStyle(color: color, height: 1.2))
+      ..addText(text);
+    final paragraph = builder.build()
+      ..layout(ui.ParagraphConstraints(width: maxWidth));
+    canvas.drawParagraph(paragraph, at);
+  }
+}
+
 class AiEnginesScreen extends StatefulWidget {
   const AiEnginesScreen({super.key});
   @override

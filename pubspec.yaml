@@ -45,6 +45,8 @@ dependencies:
   permission_handler: ^11.3.1
   # Stage W: text-to-speech for Live Listen. Required by lib/services/tts_service.dart.
   flutter_tts: ^4.2.0
+  # Stage AA: share-as-image (quote card → PNG → share sheet).
+  path_provider: ^2.1.4
 
 dev_dependencies:
   flutter_test:
