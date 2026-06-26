@@ -422,7 +422,10 @@ class _TrendingScreenState extends State<TrendingScreen> {
                                 ),
                                 onLongPress: () async {
                                   final r = await showCardActionSheet(context, item);
-                                  if (r != null && context.mounted) {
+                                  if (r == null || !context.mounted) return;
+                                  if (r == 'listen') {
+                                    await startLiveListen(context, item);
+                                  } else {
                                     _afterCardAction(r);
                                   }
                                 },
@@ -1035,7 +1038,10 @@ class _BreakingNewsScreenState extends State<BreakingNewsScreen> {
                                       ),
                                       onLongPress: () async {
                                         final r = await showCardActionSheet(context, item);
-                                        if (r != null && context.mounted) {
+                                        if (r == null || !context.mounted) return;
+                                        if (r == 'listen') {
+                                          await startLiveListen(context, item);
+                                        } else {
                                           _afterCardAction(r);
                                         }
                                       },

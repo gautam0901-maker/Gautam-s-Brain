@@ -1,0 +1,9 @@
+name = "glint-ai"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+# API keys are NOT stored here — they go in as encrypted secrets via:
+#   wrangler secret put GEMINI_KEY
+#   wrangler secret put CEREBRAS_KEY
+#   wrangler secret put GROQ_KEY
+#   wrangler secret put APP_TOKEN     (optional anti-abuse token)

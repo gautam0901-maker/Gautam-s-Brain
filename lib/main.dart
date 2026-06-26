@@ -11,6 +11,7 @@ import 'screens/trending_and_news.dart';
 import 'services/cloud_sync_service.dart';
 import 'services/deep_link_service.dart';
 import 'services/notification_service.dart';
+import 'services/tts_service.dart';
 import 'services/user_profile_service.dart';
 import 'theme.dart';
 
@@ -174,7 +175,51 @@ class _MainShellState extends State<MainShell> {
     return Scaffold(
       extendBody: true,
       backgroundColor: Colors.transparent,
-      body: IndexedStack(index: _index, children: _pages),
+      body: Stack(
+        children: [
+          IndexedStack(index: _index, children: _pages),
+          // 🎧 Global Live Listen player — floats above the nav bar on every
+          // tab whenever audio is active. Driven by the TtsService singleton
+          // so controls stay in sync with the DetailScreen player too.
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 84,
+            child: ValueListenableBuilder<bool>(
+              valueListenable: TtsService.instance.isPlaying,
+              builder: (context, _, __) {
+                if (TtsService.instance.sentences.isEmpty) {
+                  return const SizedBox.shrink();
+                }
+                return TtsPlayerBar(
+                  onToggle: () async {
+                    if (TtsService.instance.isPlaying.value) {
+                      await TtsService.instance.pause();
+                    } else {
+                      await TtsService.instance.resume();
+                    }
+                  },
+                  onClose: () => TtsService.instance.stop(),
+                  onSearchHeard: () {
+                    final heard = TtsService.instance.currentSentenceText();
+                    if (heard.trim().isEmpty) return;
+                    TtsService.instance.pause();
+                    final ctx = rootNavigatorKey.currentContext;
+                    if (ctx != null) {
+                      Navigator.push(
+                        ctx,
+                        MaterialPageRoute(
+                          builder: (_) => SearchScreen(initialQuery: heard),
+                        ),
+                      );
+                    }
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
       bottomNavigationBar: GlassNavBar(
         currentIndex: _index,
         items: _tabs,

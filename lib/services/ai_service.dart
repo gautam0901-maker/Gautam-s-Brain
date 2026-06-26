@@ -26,6 +26,19 @@ class AIService {
   AIService._();
   static final AIService instance = AIService._();
 
+  // ─────────────────────────────────────────────────────────────
+  // PRODUCTION BACKEND — your Cloudflare Worker. When set, EVERY app
+  // user gets AI through your single key (held server-side), with no
+  // setup on their end. Paste your deployed worker URL here after
+  // running `wrangler deploy` (see cloudflare-worker/README.md).
+  //   e.g. 'https://glint-ai.yourname.workers.dev'
+  static const String workerUrl = 'https://glint-ai.glintai.workers.dev';
+  // Optional anti-abuse token — must match the APP_TOKEN secret you set
+  // on the worker. Leave '' if you didn't set one.
+  static const String workerToken = '';
+
+  bool get _workerConfigured => workerUrl.isNotEmpty;
+
   // SharedPreferences keys for each provider's API key.
   static const _kGemini = 'ai_key_gemini';
   static const _kCerebras = 'ai_key_cerebras';
@@ -123,7 +136,15 @@ class AIService {
     required Future<String?> Function(List<Msg>) pollinationsFallback,
     int maxTokens = 900,
   }) async {
-    // 1) Gemini
+    // 0) Cloudflare Worker proxy — the production path. Holds your key
+    // server-side, does the Gemini→Cerebras→Groq failover itself, and
+    // serves all users with zero per-user setup. If it's unreachable we
+    // fall through to any locally-pasted keys, then Pollinations.
+    if (_workerConfigured) {
+      final r = await _callWorker(messages, maxTokens);
+      if (r != null && r.isNotEmpty) return r;
+    }
+    // 1) Gemini (local key — dev / power-user override)
     final gKey = await _key(_kGemini);
     if (gKey != null && gKey.isNotEmpty) {
       final r = await _callGemini(gKey, messages, maxTokens);
@@ -165,6 +186,33 @@ class AIService {
     // 4) Pollinations (keyless last resort)
     lastUsedProvider = 'Pollinations';
     return pollinationsFallback(messages);
+  }
+
+  // ---------------- Backend proxy ----------------
+
+  /// Calls your Cloudflare Worker, which holds the keys and runs the
+  /// failover chain server-side. Returns the answer text or null.
+  Future<String?> _callWorker(List<Msg> messages, int maxTokens) async {
+    try {
+      final resp = await http
+          .post(
+            Uri.parse(workerUrl),
+            headers: {
+              'Content-Type': 'application/json',
+              if (workerToken.isNotEmpty) 'x-glint-token': workerToken,
+            },
+            body: jsonEncode({'messages': messages, 'maxTokens': maxTokens}),
+          )
+          .timeout(const Duration(seconds: 18));
+      if (resp.statusCode != 200) return null;
+      final body = jsonDecode(resp.body) as Map<String, dynamic>;
+      final text = body['text'] as String?;
+      if (text == null || text.isEmpty) return null;
+      lastUsedProvider = (body['provider'] ?? 'Worker').toString();
+      return text.trim();
+    } catch (_) {
+      return null;
+    }
   }
 
   // ---------------- Providers ----------------

@@ -84,6 +84,21 @@ class TtsService {
     _inited = true;
   }
 
+  /// Strips characters/markup that TTS engines read literally as symbols
+  /// ("dot slash", "asterisk", "hashtag") so the audio sounds natural.
+  static String cleanForSpeech(String input) {
+    var t = input;
+    t = t.replaceAll(RegExp(r'https?://\S+'), ' ');     // URLs
+    t = t.replaceAll(RegExp(r'[*_#`>]+'), ' ');          // markdown
+    t = t.replaceAll(RegExp(r'[/\\|]+'), ' ');           // slashes/pipes
+    t = t.replaceAll(RegExp(r'^\s*[-•·]\s*', multiLine: true), ''); // bullets
+    t = t.replaceAll(RegExp(r'\.{2,}'), '.');            // ellipses
+    t = t.replaceAll(RegExp(r'[~^=<>{}\[\]]+'), ' ');    // stray symbols
+    t = t.replaceAll('&amp;', ' and ').replaceAll('&', ' and ');
+    t = t.replaceAll(RegExp(r'\s+'), ' ').trim();        // collapse spaces
+    return t;
+  }
+
   /// Splits text into speakable sentences. Keeps them short enough that the
   /// completion handler fires often (better highlight granularity).
   static List<String> splitSentences(String text) {
@@ -108,7 +123,9 @@ class TtsService {
   Future<void> start(String text, {int fromIndex = 0}) async {
     await _init();
     await stop();
-    _sentences = splitSentences(text);
+    // Safety net — even if the caller forgot to clean, strip symbols so
+    // TTS never reads "dot slash" / "asterisk".
+    _sentences = splitSentences(cleanForSpeech(text));
     if (_sentences.isEmpty) return;
     _index = fromIndex.clamp(0, _sentences.length - 1);
     _stopped = false;

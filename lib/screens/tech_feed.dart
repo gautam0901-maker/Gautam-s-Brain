@@ -914,6 +914,82 @@ Future<void> saveItemToVault(Map<String, String> paper) async {
   unawaited(CloudSyncService.instance.pushBehavior(saves: saved.length));
 }
 
+// ============================================================
+// GLINT AI VOICE + LIVE LISTEN SCRIPTS
+// ============================================================
+
+/// Shared identity prepended to every user-facing AI call so the answer
+/// reads as ONE assistant ("Glint AI") regardless of which provider
+/// (Gemini / Cerebras / Groq) actually served it. Users never see a
+/// provider name — it's all Glint AI, one consistent voice.
+const String kGlintPersona =
+    "You are Glint AI, the friendly built-in assistant of the Glint news app. "
+    "Always speak in one consistent, warm, clear voice. Never mention which "
+    "model, company, or provider you are — you are simply Glint AI.";
+
+/// Builds a lively spoken-word script for ONE article (Live Listen).
+/// Online → Glint AI summary, clean and detailed. Offline/failure →
+/// cleaned abstract so it still plays something sensible.
+Future<String> buildArticleListenScript(Map<String, String> item) async {
+  final title = item['title'] ?? '';
+  final body = item['summary'] ?? '';
+  final prompt = "$kGlintPersona\n\n"
+      "Turn this article into a natural, lively spoken-word audio summary a "
+      "listener can comfortably follow. STRICT rules: plain spoken sentences "
+      "only — NO markdown, NO URLs, NO symbols (no slashes, asterisks, hashes), "
+      "no headings, no bullet points, no lists. Begin by naming the story, then "
+      "explain what happened and why it matters, in about 120-160 words. Warm, "
+      "engaging radio-host tone.\n\n"
+      "Title: $title\n\nContent: ${body.length > 1500 ? body.substring(0, 1500) : body}";
+  final ai = await AIService.instance.generate(
+    prompt: prompt,
+    pollinationsFallback: PollinationsAI.generate,
+    maxTokens: 400,
+  );
+  if (ai != null && ai.trim().length > 40) {
+    return TtsService.cleanForSpeech(ai);
+  }
+  // Offline / AI failed → read the cleaned abstract.
+  final fallback = '$title. ${body.isEmpty ? 'No summary is available for this story yet.' : body}';
+  return TtsService.cleanForSpeech(fallback);
+}
+
+/// Builds a radio-style briefing across several Discover cards:
+/// "Here are your top stories. Story one… Story two…". Online → Glint AI
+/// host script; offline → simple titles read in order.
+Future<String> buildDeckListenScript(List<Map<String, String>> items) async {
+  final picks = items.take(6).toList();
+  if (picks.isEmpty) return '';
+  final raw = <String>[];
+  for (int i = 0; i < picks.length; i++) {
+    final t = picks[i]['title'] ?? '';
+    final s = picks[i]['summary'] ?? '';
+    raw.add("Story ${i + 1}: $t. ${s.length > 300 ? s.substring(0, 300) : s}");
+  }
+  final prompt = "$kGlintPersona\n\n"
+      "You are hosting a short audio news roundup for the Glint app. Read these "
+      "${picks.length} stories as one smooth, lively spoken-word briefing. "
+      "Announce each as 'Story one', 'Story two', and so on. STRICT rules: plain "
+      "spoken sentences only — NO markdown, NO URLs, NO symbols. Open with a "
+      "quick friendly intro, give each story a sentence or two, and close with a "
+      "short sign-off.\n\n${raw.join('\n\n')}";
+  final ai = await AIService.instance.generate(
+    prompt: prompt,
+    pollinationsFallback: PollinationsAI.generate,
+    maxTokens: 700,
+  );
+  if (ai != null && ai.trim().length > 60) {
+    return TtsService.cleanForSpeech(ai);
+  }
+  // Offline fallback — read titles in order.
+  final fb = StringBuffer("Here are your top stories from Glint. ");
+  for (int i = 0; i < picks.length; i++) {
+    fb.write("Story ${i + 1}. ${picks[i]['title'] ?? ''}. ");
+  }
+  fb.write("That's your briefing.");
+  return TtsService.cleanForSpeech(fb.toString());
+}
+
 /// Adds an item's title to the dislikes list (negative signal). Shared by
 /// the long-press "Skip" action and the swipe-left flow.
 Future<void> markItemDisliked(Map<String, String> item) async {
@@ -929,9 +1005,21 @@ Future<void> markItemDisliked(Map<String, String> item) async {
   unawaited(CloudSyncService.instance.pushDislikes(stored));
 }
 
+/// Starts Live Listen for a single item from anywhere (long-press menus).
+/// Shows a "preparing" toast, builds the Glint AI script, then plays. The
+/// global player bar (MainShell) surfaces the controls.
+Future<void> startLiveListen(BuildContext context, Map<String, String> item) async {
+  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+    content: Text('🎧 Glint AI is preparing your audio…'),
+    duration: Duration(seconds: 2),
+  ));
+  final script = await buildArticleListenScript(item);
+  await TtsService.instance.start(script);
+}
+
 /// Long-press action sheet for any feed card (Discover/Trending/News).
-/// Save · Share · Mute source · Skip. Returns a label of what happened so
-/// the caller can show a toast / remove the row.
+/// Live Listen · Save · Share · Mute source · Skip. Returns a label of
+/// what happened so the caller can react.
 Future<String?> showCardActionSheet(
     BuildContext context, Map<String, String> item) async {
   HapticFeedback.mediumImpact();
@@ -973,6 +1061,10 @@ Future<String?> showCardActionSheet(
                       fontWeight: FontWeight.w700)),
             ),
             const Divider(height: 18),
+            action(Icons.headset_mic, 'Live Listen', 'Hear a Glint AI summary',
+                glintAccent(sheetCtx), () {
+              Navigator.pop(sheetCtx, 'listen');
+            }),
             action(Icons.bookmark_add_outlined, 'Save to Vault', '',
                 glintAccent(sheetCtx), () async {
               await saveItemToVault(item);
@@ -1110,6 +1202,35 @@ class _TechFeedScreenState extends State<TechFeedScreen> {
 
   // First-launch coachmark gate.
   bool _showCoachmark = false;
+
+  // Live Listen (deck briefing) loading state.
+  bool _preparingDeckAudio = false;
+
+  Future<void> _deckListen() async {
+    HapticFeedback.mediumImpact();
+    if (TtsService.instance.isPlaying.value) {
+      await TtsService.instance.pause();
+      setState(() {});
+      return;
+    }
+    if (TtsService.instance.sentences.isNotEmpty) {
+      await TtsService.instance.resume();
+      setState(() {});
+      return;
+    }
+    if (papers.isEmpty) return;
+    setState(() => _preparingDeckAudio = true);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('🎙️ Glint AI is preparing your news briefing…'),
+        duration: Duration(seconds: 2),
+      ));
+    }
+    final script = await buildDeckListenScript(papers);
+    if (!mounted) return;
+    await TtsService.instance.start(script);
+    setState(() => _preparingDeckAudio = false);
+  }
 
   @override
   void initState() {
@@ -1959,33 +2080,71 @@ class _TechFeedScreenState extends State<TechFeedScreen> {
                   },
                 ),
               ),
-              // 🔍 Search entry — always visible, opens global search.
+              // 🔍 Search entry + 🎧 Live Listen — always visible row.
               SpringIn(
                 delayMs: 40,
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-                  child: SpringScale(
-                    onTap: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => const SearchScreen()),
-                    ),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-                      decoration: BoxDecoration(
-                        color: glintMuted(context, 0.06),
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: glintMuted(context, 0.10)),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: SpringScale(
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (_) => const SearchScreen()),
+                          ),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                            decoration: BoxDecoration(
+                              color: glintMuted(context, 0.06),
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(color: glintMuted(context, 0.10)),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(Icons.search, size: 19, color: glintText(context, 0.55)),
+                                const SizedBox(width: 10),
+                                Text('Search anything…',
+                                    style: TextStyle(
+                                        color: glintText(context, 0.45), fontSize: 14)),
+                              ],
+                            ),
+                          ),
+                        ),
                       ),
-                      child: Row(
-                        children: [
-                          Icon(Icons.search, size: 19, color: glintText(context, 0.55)),
-                          const SizedBox(width: 10),
-                          Text('Search news, topics, anything…',
-                              style: TextStyle(
-                                  color: glintText(context, 0.45), fontSize: 14)),
-                        ],
+                      const SizedBox(width: 10),
+                      // 🎧 Live Listen — Glint AI reads your top stories aloud.
+                      SpringScale(
+                        onTap: _preparingDeckAudio ? () {} : _deckListen,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+                          decoration: BoxDecoration(
+                            color: glintAccent(context).withOpacity(0.16),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: glintAccent(context).withOpacity(0.45)),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              _preparingDeckAudio
+                                  ? SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2, color: glintAccent(context)))
+                                  : Icon(Icons.headset_mic,
+                                      size: 18, color: glintAccent(context)),
+                              const SizedBox(width: 7),
+                              Text('Live Listen',
+                                  style: TextStyle(
+                                      color: glintAccent(context),
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w700)),
+                            ],
+                          ),
+                        ),
                       ),
-                    ),
+                    ],
                   ),
                 ),
               ),
@@ -2205,6 +2364,11 @@ class _TechFeedScreenState extends State<TechFeedScreen> {
                                       onLongPress: () async {
                                         final r = await showCardActionSheet(context, paper);
                                         if (r == null || !mounted) return;
+                                        if (r == 'listen') {
+                                          await startLiveListen(context, paper);
+                                          if (mounted) setState(() {});
+                                          return;
+                                        }
                                         // Mute/skip → drop from the deck immediately.
                                         if (r == 'muted' || r == 'skipped') {
                                           setState(() => papers.removeWhere(
@@ -2716,7 +2880,8 @@ class _DetailScreenState extends State<DetailScreen> {
       {
         'role': 'system',
         'content':
-            "You are an expert tech analyst and educator. Help the user genuinely understand the content below. "
+            "$kGlintPersona\n\n"
+                "Act as an expert tech analyst and educator. Help the user genuinely understand the content below. "
                 "Treat it as primary source, but bring in well-known related knowledge when it adds clarity.\n\n"
                 "Title: ${widget.paper['title'] ?? ''}\n"
                 "Source: ${widget.paper['source'] ?? ''}\n"
@@ -2766,30 +2931,39 @@ class _DetailScreenState extends State<DetailScreen> {
     if (!await launchUrl(url, mode: LaunchMode.externalApplication)) { print('Could not launch $url'); }
   }
 
-  /// Builds the read-aloud script: title, then the best available body
-  /// (scraped full article if we have it, else the summary).
-  String _buildListenText() {
-    final title = widget.paper['title'] ?? '';
-    final body = (_articleBody != null && _articleBody!.length > 200)
-        ? _articleBody!
-        : (widget.paper['summary'] ?? '');
-    return '$title. \n\n $body';
-  }
+  bool _preparingAudio = false;
 
   Future<void> _toggleListen() async {
     HapticFeedback.mediumImpact();
     if (TtsService.instance.isPlaying.value) {
       await TtsService.instance.pause();
       setState(() {});
-    } else {
-      // If we already have a queue for this article, resume; else start fresh.
-      if (TtsService.instance.sentences.isEmpty) {
-        await TtsService.instance.start(_buildListenText());
-      } else {
-        await TtsService.instance.resume();
-      }
-      setState(() {});
+      return;
     }
+    // Resume an already-built queue for this article.
+    if (TtsService.instance.sentences.isNotEmpty) {
+      await TtsService.instance.resume();
+      setState(() {});
+      return;
+    }
+    // First play → Glint AI writes a clean spoken summary (offline falls
+    // back to the cleaned abstract inside buildArticleListenScript).
+    setState(() => _preparingAudio = true);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('🎧 Glint AI is preparing your audio…'),
+        duration: Duration(seconds: 2),
+      ));
+    }
+    // Prefer the scraped full article when we have it.
+    final item = Map<String, String>.from(widget.paper);
+    if (_articleBody != null && _articleBody!.length > 200) {
+      item['summary'] = _articleBody!;
+    }
+    final script = await buildArticleListenScript(item);
+    if (!mounted) return;
+    await TtsService.instance.start(script);
+    setState(() => _preparingAudio = false);
   }
 
   void _onScroll() {
@@ -2847,7 +3021,10 @@ class _DetailScreenState extends State<DetailScreen> {
   @override
   void dispose() {
     _saveScrollPosition();
-    TtsService.instance.stop();
+    // NOTE: we deliberately do NOT stop TTS here — Live Listen keeps
+    // playing as you leave the article and browse other tabs (the global
+    // player bar in MainShell takes over the controls). Stop it from the
+    // player bar's close button.
     _scrollCtl.removeListener(_onScroll);
     _scrollCtl.dispose();
     _chatController.dispose();
@@ -2877,16 +3054,23 @@ class _DetailScreenState extends State<DetailScreen> {
               elevation: 0,
               actions: [
                 SpringScale(
-                  onTap: _toggleListen,
+                  onTap: _preparingAudio ? () {} : _toggleListen,
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 10),
-                    child: ValueListenableBuilder<bool>(
-                      valueListenable: TtsService.instance.isPlaying,
-                      builder: (_, playing, __) => Icon(
-                        playing ? Icons.headset : Icons.headset_outlined,
-                        color: playing ? glintAccent(context) : glintText(context),
-                      ),
-                    ),
+                    child: _preparingAudio
+                        ? SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: glintAccent(context)),
+                          )
+                        : ValueListenableBuilder<bool>(
+                            valueListenable: TtsService.instance.isPlaying,
+                            builder: (_, playing, __) => Icon(
+                              playing ? Icons.headset : Icons.headset_outlined,
+                              color: playing ? glintAccent(context) : glintText(context),
+                            ),
+                          ),
                   ),
                 ),
                 SpringScale(
@@ -3017,7 +3201,7 @@ class _DetailScreenState extends State<DetailScreen> {
             builder: (context, playing, _) {
               final hasQueue = TtsService.instance.sentences.isNotEmpty;
               if (!hasQueue) return const SizedBox.shrink();
-              return _TtsPlayerBar(
+              return TtsPlayerBar(
                 onSearchHeard: _searchCurrentlyHeard,
                 onClose: () async {
                   await TtsService.instance.stop();
@@ -4624,11 +4808,12 @@ class _SkippedScreenState extends State<SkippedScreen> {
 // listening. Shows the current sentence, transport controls, and a
 // "Find this" button that searches whatever was just spoken.
 // ============================================================
-class _TtsPlayerBar extends StatelessWidget {
+class TtsPlayerBar extends StatelessWidget {
   final VoidCallback onSearchHeard;
   final VoidCallback onClose;
   final VoidCallback onToggle;
-  const _TtsPlayerBar({
+  const TtsPlayerBar({
+    super.key,
     required this.onSearchHeard,
     required this.onClose,
     required this.onToggle,
