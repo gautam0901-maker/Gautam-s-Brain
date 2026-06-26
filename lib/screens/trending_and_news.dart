@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xml/xml.dart' as xml;
 import 'tech_feed.dart';
+import '../widgets/skeleton.dart';
 import '../services/feed_cache.dart';
 import '../services/location_service.dart';
 import '../theme.dart';
@@ -112,18 +113,12 @@ class _TrendingScreenState extends State<TrendingScreen> {
   /// all show a confirmation toast.
   void _afterCardAction(String result) {
     if (!mounted) return;
-    const labels = {
-      'saved': 'Saved to Vault',
-      'shared': 'Shared',
-      'muted': 'Source muted — hidden from your feeds',
-      'skipped': 'Got it — fewer like this',
-    };
     if (result == 'muted' || result == 'skipped') {
       setState(() => items = items.where((it) => !isSourceMuted(it)).toList());
     }
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(labels[result] ?? 'Done'),
+        content: Text(cardActionLabel(result)),
         behavior: SnackBarBehavior.floating,
         duration: const Duration(milliseconds: 1600),
       ),
@@ -354,8 +349,7 @@ class _TrendingScreenState extends State<TrendingScreen> {
       body: AnimatedAuroraBackground(
         child: SafeArea(
           child: isLoading
-              ? const Center(
-                  child: CircularProgressIndicator(color: Colors.lightBlueAccent))
+              ? const ListSkeleton(count: 6)
               : items.isEmpty
                   ? Center(
                       child: Column(
@@ -630,18 +624,12 @@ class _BreakingNewsScreenState extends State<BreakingNewsScreen> {
 
   void _afterCardAction(String result) {
     if (!mounted) return;
-    const labels = {
-      'saved': 'Saved to Vault',
-      'shared': 'Shared',
-      'muted': 'Source muted — hidden from your feeds',
-      'skipped': 'Got it — fewer like this',
-    };
     if (result == 'muted' || result == 'skipped') {
       setState(() => items = items.where((it) => !isSourceMuted(it)).toList());
     }
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(labels[result] ?? 'Done'),
+        content: Text(cardActionLabel(result)),
         behavior: SnackBarBehavior.floating,
         duration: const Duration(milliseconds: 1600),
       ),
@@ -936,9 +924,7 @@ class _BreakingNewsScreenState extends State<BreakingNewsScreen> {
               const SizedBox(height: 8),
               Expanded(
                 child: isLoading
-                    ? const Center(
-                        child:
-                            CircularProgressIndicator(color: Colors.lightBlueAccent))
+                    ? const ListSkeleton(count: 6)
                     : items.isEmpty
                         ? Center(
                             child: Padding(

@@ -43,6 +43,8 @@ dependencies:
   flutter_local_notifications: ^18.0.1
   timezone: ^0.10.0
   permission_handler: ^11.3.1
+  # Stage W: text-to-speech for Live Listen. Required by lib/services/tts_service.dart.
+  flutter_tts: ^4.2.0
 
 dev_dependencies:
   flutter_test:

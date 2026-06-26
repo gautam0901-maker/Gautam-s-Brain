@@ -27,12 +27,30 @@ class TtsService {
   final ValueNotifier<int> currentSentence = ValueNotifier<int>(-1);
   final ValueNotifier<bool> isPlaying = ValueNotifier<bool>(false);
 
+  // Playback speed. Base calm rate is 0.42; the multiplier scales it.
+  static const double _baseRate = 0.42;
+  static const List<double> speedSteps = [0.75, 1.0, 1.25, 1.5];
+  final ValueNotifier<double> speed = ValueNotifier<double>(1.0);
+
+  /// Cycle to the next speed step and apply it live. Re-speaks the current
+  /// sentence so the new rate takes effect immediately.
+  Future<void> cycleSpeed() async {
+    final i = speedSteps.indexOf(speed.value);
+    final next = speedSteps[(i + 1) % speedSteps.length];
+    speed.value = next;
+    await _tts.setSpeechRate((_baseRate * next).clamp(0.1, 1.0));
+    if (_isPlaying && _index >= 0 && _index < _sentences.length) {
+      await _tts.stop();
+      await _speakCurrent();
+    }
+  }
+
   List<String> get sentences => _sentences;
 
   Future<void> _init() async {
     if (_inited) return;
-    // Slow + calm. 0.40 ≈ relaxed narration; default is ~0.5 and sounds rushed.
-    await _tts.setSpeechRate(0.40);
+    // Slow + calm by default. The speed multiplier (1.0×) scales this.
+    await _tts.setSpeechRate((_baseRate * speed.value).clamp(0.1, 1.0));
     await _tts.setPitch(0.96); // very slightly lower = warmer, less robotic
     await _tts.setVolume(1.0);
     // Prefer a high-quality / network voice if the device has one. We scan

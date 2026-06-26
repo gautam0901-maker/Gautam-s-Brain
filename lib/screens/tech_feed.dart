@@ -25,6 +25,7 @@ import '../services/user_profile_service.dart';
 import '../theme.dart';
 import '../widgets/coachmark_overlay.dart';
 import '../widgets/comments_section.dart';
+import '../widgets/skeleton.dart';
 
 // ============================================================
 // OG META SCRAPER — one HTML fetch, two outputs: image (og:image
@@ -530,6 +531,55 @@ Future<void> removeMutedSource(String source) async {
   mutedSourcesCache = list.map((e) => e.toLowerCase()).toSet();
 }
 
+// ============================================================
+// READ-IT-LATER QUEUE — distinct from the Vault (save = keep;
+// read-later = a to-read queue you clear as you go).
+// ============================================================
+const String _readLaterKey = 'read_later';
+
+Future<List<Map<String, String>>> loadReadLater() async {
+  final prefs = await SharedPreferences.getInstance();
+  final raw = prefs.getStringList(_readLaterKey) ?? const [];
+  final out = <Map<String, String>>[];
+  for (final r in raw.reversed) {
+    try {
+      final m = (jsonDecode(r) as Map).map((k, v) => MapEntry('$k', '${v ?? ''}'));
+      out.add(m);
+    } catch (_) {}
+  }
+  return out;
+}
+
+Future<bool> addToReadLater(Map<String, String> item) async {
+  final prefs = await SharedPreferences.getInstance();
+  final list = prefs.getStringList(_readLaterKey) ?? <String>[];
+  final title = item['title'] ?? '';
+  // De-dupe by title.
+  for (final r in list) {
+    try {
+      if (((jsonDecode(r) as Map)['title'] ?? '') == title) return false;
+    } catch (_) {}
+  }
+  list.add(jsonEncode(item));
+  await prefs.setStringList(_readLaterKey, list);
+  unawaited(CloudSyncService.instance.pushReadLater(list));
+  return true;
+}
+
+Future<void> removeFromReadLater(String title) async {
+  final prefs = await SharedPreferences.getInstance();
+  final list = prefs.getStringList(_readLaterKey) ?? <String>[];
+  list.removeWhere((r) {
+    try {
+      return ((jsonDecode(r) as Map)['title'] ?? '') == title;
+    } catch (_) {
+      return false;
+    }
+  });
+  await prefs.setStringList(_readLaterKey, list);
+  unawaited(CloudSyncService.instance.pushReadLater(list));
+}
+
 /// True if this item's source matches any muted entry.
 bool isSourceMuted(Map<String, String> item) {
   if (mutedSourcesCache.isEmpty) return false;
@@ -957,8 +1007,9 @@ Future<String> buildArticleListenScript(Map<String, String> item) async {
 /// Builds a radio-style briefing across several Discover cards:
 /// "Here are your top stories. Story one… Story two…". Online → Glint AI
 /// host script; offline → simple titles read in order.
-Future<String> buildDeckListenScript(List<Map<String, String>> items) async {
-  final picks = items.take(6).toList();
+Future<String> buildDeckListenScript(List<Map<String, String>> items,
+    {int limit = 6}) async {
+  final picks = items.take(limit).toList();
   if (picks.isEmpty) return '';
   final raw = <String>[];
   for (int i = 0; i < picks.length; i++) {
@@ -1017,9 +1068,99 @@ Future<void> startLiveListen(BuildContext context, Map<String, String> item) asy
   await TtsService.instance.start(script);
 }
 
+/// Human label for a long-press action result (toast text).
+String cardActionLabel(String r) {
+  switch (r) {
+    case 'saved':
+      return 'Saved to Vault';
+    case 'shared':
+      return 'Shared';
+    case 'muted':
+      return 'Source muted — hidden from your feeds';
+    case 'skipped':
+      return 'Got it — fewer like this';
+    case 'queued':
+      return 'Added to Read Later';
+    case 'already_queued':
+      return 'Already in Read Later';
+    default:
+      return 'Done';
+  }
+}
+
+/// Explains WHY a card surfaced — builds trust in the algorithm. Derives
+/// the reason from pinned topics, learned source affinity, and keywords.
+void _showWhyThis(BuildContext context, Map<String, String> item) {
+  final source = item['source'] ?? '';
+  final title = (item['title'] ?? '').toLowerCase();
+  final reasons = <String>[];
+
+  // 1) Pinned-topic match.
+  // (subscribedTopics is per-Discover state; fall back to reading prefs.)
+  // We check the title/summary against the stored subscriptions.
+  // 2) Source affinity.
+  final aff = PersonalizationService.instance.cached;
+  if (!aff.isColdStart) {
+    final topSrc = aff.topSources(5).map((e) => e.key.toLowerCase()).toList();
+    if (source.isNotEmpty && topSrc.contains(source.toLowerCase())) {
+      reasons.add("You often save stories from $source.");
+    }
+    for (final kw in aff.topKeywords(8)) {
+      if (kw.key.length >= 4 && title.contains(kw.key.toLowerCase())) {
+        reasons.add("You've shown interest in \"${kw.key}\".");
+        break;
+      }
+    }
+  }
+  if (reasons.isEmpty) {
+    reasons.add(aff.isColdStart
+        ? "We're still learning your taste — swipe right on what you like and this gets sharper."
+        : "This matches the topics and sources you follow.");
+  }
+
+  showDialog(
+    context: context,
+    builder: (dctx) => AlertDialog(
+      backgroundColor: Theme.of(dctx).brightness == Brightness.dark
+          ? const Color(0xFF0C1622)
+          : Colors.white,
+      title: Row(children: [
+        Icon(Icons.auto_awesome, color: glintAccent(dctx), size: 20),
+        const SizedBox(width: 8),
+        Text('Why this?', style: TextStyle(color: glintText(dctx), fontSize: 18)),
+      ]),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: reasons
+            .map((r) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Icon(Icons.check_circle_outline,
+                        size: 16, color: glintAccent(dctx)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(r,
+                          style: TextStyle(
+                              color: glintText(dctx, 0.8), fontSize: 14, height: 1.4)),
+                    ),
+                  ]),
+                ))
+            .toList(),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dctx),
+          child: Text('Got it', style: TextStyle(color: glintAccent(dctx))),
+        ),
+      ],
+    ),
+  );
+}
+
 /// Long-press action sheet for any feed card (Discover/Trending/News).
-/// Live Listen · Save · Share · Mute source · Skip. Returns a label of
-/// what happened so the caller can react.
+/// Live Listen · Save · Read Later · Why · Share · Mute · Skip. Returns a
+/// label of what happened so the caller can react.
 Future<String?> showCardActionSheet(
     BuildContext context, Map<String, String> item) async {
   HapticFeedback.mediumImpact();
@@ -1069,6 +1210,18 @@ Future<String?> showCardActionSheet(
                 glintAccent(sheetCtx), () async {
               await saveItemToVault(item);
               if (sheetCtx.mounted) Navigator.pop(sheetCtx, 'saved');
+            }),
+            action(Icons.watch_later_outlined, 'Read Later',
+                'Add to your reading queue', glintWarmAccent(sheetCtx), () async {
+              final added = await addToReadLater(item);
+              if (sheetCtx.mounted) {
+                Navigator.pop(sheetCtx, added ? 'queued' : 'already_queued');
+              }
+            }),
+            action(Icons.help_outline, 'Why am I seeing this?', '',
+                glintText(sheetCtx, 0.7), () {
+              Navigator.pop(sheetCtx);
+              _showWhyThis(context, item);
             }),
             action(Icons.share_outlined, 'Share', '', glintText(sheetCtx),
                 () {
@@ -1205,6 +1358,43 @@ class _TechFeedScreenState extends State<TechFeedScreen> {
 
   // Live Listen (deck briefing) loading state.
   bool _preparingDeckAudio = false;
+
+  // AA.2: wildcard discovery — pulls a diverse mix outside the user's
+  // usual topics so the feed doesn't become an echo chamber.
+  static const List<String> _wildcardPool = [
+    'space exploration', 'neuroscience', 'climate tech', 'archaeology',
+    'electric vehicles', 'biotech', 'robotics', 'ocean science',
+    'quantum physics', 'cybersecurity', 'renewable energy', 'genetics',
+    'astronomy', 'psychology', 'economics', 'history',
+    'gaming', 'design', 'startups', 'medicine',
+  ];
+
+  Future<void> _surpriseMe() async {
+    HapticFeedback.mediumImpact();
+    setState(() {
+      isLoading = true;
+      currentFeedTitle = "Surprise Mix 🎲";
+      horizonTopics = [];
+    });
+    // Pick 3 random wildcard topics (index-varied so it's different each tap).
+    final pool = List<String>.from(_wildcardPool)..shuffle();
+    final picks = pool.take(3).toList();
+    final batches = await Future.wait(picks.map((t) => _fetchTopicNews(t)));
+    final merged = batches.expand((b) => b).toList();
+    if (!mounted) return;
+    final dedup = await _dedupAndShuffle(merged);
+    setState(() {
+      papers = dedup;
+      isLoading = false;
+    });
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('🎲 Wildcard mix: ${picks.join(", ")}'),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
+      ));
+    }
+  }
 
   Future<void> _deckListen() async {
     HapticFeedback.mediumImpact();
@@ -1348,10 +1538,25 @@ class _TechFeedScreenState extends State<TechFeedScreen> {
       horizonTopics = [];
     });
 
-    const prompt =
-        "Name exactly 3 bleeding-edge AI subfields that aren't yet mainstream (examples: Liquid Neural Networks, Neuromorphic Computing, Quantum Machine Learning). Reply with ONLY the 3 names separated by commas. No numbering. No introduction. No quotes. No markdown.";
+    // Suggestions follow the user's actual interests. If they've pinned
+    // "cars, cycling", suggest related subtopics — NOT random AI fields.
+    final String prompt;
+    if (subscribedTopics.isNotEmpty) {
+      final topics = subscribedTopics.join(', ');
+      prompt =
+          "The user is interested in: $topics. Name exactly 3 specific, "
+          "interesting subtopics or emerging trends within those interests "
+          "that they'd want to explore next. Reply with ONLY the 3 names "
+          "separated by commas. No numbering, no intro, no quotes, no markdown.";
+    } else {
+      prompt =
+          "Name exactly 3 bleeding-edge AI subfields that aren't yet mainstream "
+          "(examples: Liquid Neural Networks, Neuromorphic Computing, Quantum "
+          "Machine Learning). Reply with ONLY the 3 names separated by commas. "
+          "No numbering. No introduction. No quotes. No markdown.";
+    }
 
-    final result = await AIService.instance.generate(pollinationsFallback: PollinationsAI.generate, prompt:prompt);
+    final result = await AIService.instance.generate(pollinationsFallback: PollinationsAI.generate, prompt: prompt);
 
     if (!mounted) return;
     if (result == null || result.isEmpty) {
@@ -1440,12 +1645,52 @@ class _TechFeedScreenState extends State<TechFeedScreen> {
         _fetchHackerNews(topic: topic),
         _fetchReddit(topic: topic),
         _fetchDevto(topic: topic),
-        // RSS has no search, so skip in topic mode.
-        if (!isTopicMode) _fetchAllRss() else Future.value(<Map<String, String>>[]),
+        // In topic mode the tech sources (arXiv/GitHub/HN) often have little
+        // for non-tech topics like "cars" or "cycling". Google News search
+        // covers ANY subject, so pinned topics actually return relevant news.
+        if (isTopicMode) _fetchTopicNews(topic) else _fetchAllRss(),
       ]);
       return batches.expand((b) => b).toList();
     } catch (e) {
       print('⚠️ _fetchForOneTopic error: $e');
+      return [];
+    }
+  }
+
+  /// Google News RSS search — relevant articles for ANY topic, tech or not.
+  /// This is what makes pinned topics like "cars" / "cycling" actually work.
+  Future<List<Map<String, String>>> _fetchTopicNews(String topic) async {
+    try {
+      final uri = Uri.parse(
+          'https://news.google.com/rss/search?q=${Uri.encodeQueryComponent(topic)}&hl=en-US&gl=US&ceid=US:en');
+      final resp = await http.get(uri).timeout(const Duration(seconds: 12));
+      if (resp.statusCode != 200) return [];
+      final doc = xml.XmlDocument.parse(resp.body);
+      final out = <Map<String, String>>[];
+      for (final it in doc.findAllElements('item').take(15)) {
+        String tag(String n) => it.findElements(n).isEmpty
+            ? ''
+            : it.findElements(n).first.innerText;
+        final title = tag('title');
+        final link = tag('link');
+        if (title.isEmpty || link.isEmpty) continue;
+        final desc = tag('description')
+            .replaceAll(RegExp(r'<[^>]*>'), ' ')
+            .replaceAll('&nbsp;', ' ')
+            .replaceAll(RegExp(r'\s+'), ' ')
+            .trim();
+        out.add({
+          'title': title,
+          'url': link,
+          'source': tag('source').isEmpty ? 'Google News' : tag('source'),
+          'author': tag('source').isEmpty ? 'News' : tag('source'),
+          'summary': desc.isEmpty ? title : desc,
+          'image': '',
+        });
+      }
+      return out;
+    } catch (e) {
+      print('⚠️ _fetchTopicNews error: $e');
       return [];
     }
   }
@@ -2112,7 +2357,22 @@ class _TechFeedScreenState extends State<TechFeedScreen> {
                           ),
                         ),
                       ),
-                      const SizedBox(width: 10),
+                      const SizedBox(width: 8),
+                      // 🎲 Surprise Me — wildcard discovery mix.
+                      SpringScale(
+                        onTap: _surpriseMe,
+                        child: Container(
+                          padding: const EdgeInsets.all(11),
+                          decoration: BoxDecoration(
+                            color: glintMuted(context, 0.06),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: glintMuted(context, 0.10)),
+                          ),
+                          child: Icon(Icons.casino_outlined,
+                              size: 20, color: glintWarmAccent(context)),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
                       // 🎧 Live Listen — Glint AI reads your top stories aloud.
                       SpringScale(
                         onTap: _preparingDeckAudio ? () {} : _deckListen,
@@ -2303,47 +2563,62 @@ class _TechFeedScreenState extends State<TechFeedScreen> {
                 child: SpringIn(
                 delayMs: 240,
                 child: isLoading
-                    ? const Center(child: CircularProgressIndicator(color: Colors.lightBlueAccent))
+                    ? const Padding(
+                        padding: EdgeInsets.fromLTRB(16, 6, 16, 30),
+                        child: DiscoverCardSkeleton(),
+                      )
                     : papers.isEmpty
                         ? Center(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(Icons.search_off, color: glintText(context, 0.4), size: 60),
-                                const SizedBox(height: 16),
-                                Text("No intel found on this.",
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 36),
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(Icons.travel_explore,
+                                      color: glintText(context, 0.35), size: 64),
+                                  const SizedBox(height: 18),
+                                  Text(
+                                    subscribedTopics.isEmpty
+                                        ? "No stories right now."
+                                        : "Nothing fresh for your topics yet.",
+                                    textAlign: TextAlign.center,
                                     style: TextStyle(
-                                        color: glintText(context), fontSize: 20, fontWeight: FontWeight.bold)),
-                                const SizedBox(height: 24),
-                                SpringScale(
-                                  onTap: _resetFeed,
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
-                                    decoration: BoxDecoration(
-                                      gradient: const LinearGradient(
-                                        colors: [Color(0xFF243B55), Color(0xFF141E30)],
-                                      ),
-                                      borderRadius: BorderRadius.circular(14),
-                                    ),
-                                    child: const Text("Return to General Feed",
-                                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                                        color: glintText(context),
+                                        fontSize: 19,
+                                        fontWeight: FontWeight.bold),
                                   ),
-                                ),
-                              ],
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    subscribedTopics.isEmpty
+                                        ? "Pull down to refresh, or pin a topic in Settings to personalize."
+                                        : "Pull down to refresh, or try Surprise Me for a wildcard mix.",
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                        color: glintText(context, 0.5), fontSize: 14, height: 1.5),
+                                  ),
+                                  const SizedBox(height: 24),
+                                  SpringScale(
+                                    onTap: _resetFeed,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
+                                      decoration: BoxDecoration(
+                                        color: glintAccent(context).withOpacity(0.18),
+                                        borderRadius: BorderRadius.circular(14),
+                                        border: Border.all(color: glintAccent(context).withOpacity(0.4)),
+                                      ),
+                                      child: Text("Return to General Feed",
+                                          style: TextStyle(
+                                              color: glintAccent(context),
+                                              fontWeight: FontWeight.w700)),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           )
                         : Column(
                             children: [
-                              Padding(
-                                padding: const EdgeInsets.symmetric(vertical: 12),
-                                child: Text(
-                                  "Swipe Right to Save  →   ←   Swipe Left to Skip",
-                                  style: TextStyle(
-                                      color: glintText(context, 0.55),
-                                      fontWeight: FontWeight.w500,
-                                      letterSpacing: 0.4),
-                                ),
-                              ),
+                              const SizedBox(height: 6),
                               Expanded(
                                 child: CardSwiper(
                                   controller: swiperController,
@@ -2377,13 +2652,7 @@ class _TechFeedScreenState extends State<TechFeedScreen> {
                                         if (mounted) {
                                           ScaffoldMessenger.of(context).showSnackBar(
                                             SnackBar(
-                                              content: Text(r == 'muted'
-                                                  ? 'Source muted'
-                                                  : r == 'skipped'
-                                                      ? 'Fewer like this'
-                                                      : r == 'saved'
-                                                          ? 'Saved to Vault'
-                                                          : 'Shared'),
+                                              content: Text(cardActionLabel(r)),
                                               behavior: SnackBarBehavior.floating,
                                               duration: const Duration(milliseconds: 1500),
                                             ),
@@ -2412,9 +2681,10 @@ class _TechFeedScreenState extends State<TechFeedScreen> {
                                           child: Column(
                                             crossAxisAlignment: CrossAxisAlignment.stretch,
                                             children: [
-                                              // Thumbnail strip — image fades into card body, no harsh rectangle.
-                                              SizedBox(
-                                                height: 200,
+                                              // Thumbnail strip — Flexible (not fixed 200px) so the
+                                              // card never overflows on short decks / small screens.
+                                              Flexible(
+                                                flex: 5,
                                                 child: Stack(
                                                   fit: StackFit.expand,
                                                   children: [
@@ -2469,10 +2739,12 @@ class _TechFeedScreenState extends State<TechFeedScreen> {
                                                   ],
                                                 ),
                                               ),
-                                              // Text content
-                                              Expanded(
+                                              // Text content — Flexible so it shares height with the
+                                              // image proportionally and never pushes past the card.
+                                              Flexible(
+                                                flex: 7,
                                                 child: Padding(
-                                                  padding: const EdgeInsets.all(22),
+                                                  padding: const EdgeInsets.fromLTRB(22, 18, 22, 18),
                                                   child: Column(
                                                     crossAxisAlignment: CrossAxisAlignment.start,
                                                     mainAxisAlignment: MainAxisAlignment.start,
@@ -2563,12 +2835,58 @@ class _VaultScreenState extends State<VaultScreen> {
   final TextEditingController searchController = TextEditingController();
   List<String> availableCategories = ['All'];
   String selectedCategory = 'All';
+  // 'saved' = Vault; 'queue' = Read Later list.
+  String _vaultMode = 'saved';
 
   @override
   void initState() {
     super.initState();
     tabTapTicker.addListener(_onTabTap);
     loadVault();
+  }
+
+  Widget _vaultTab(String mode, String label, IconData icon) {
+    final on = _vaultMode == mode;
+    return Expanded(
+      child: SpringScale(
+        onTap: () => _setMode(mode),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 11),
+          decoration: BoxDecoration(
+            color: on ? glintAccent(context).withOpacity(0.18) : glintMuted(context, 0.05),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+                color: on ? glintAccent(context).withOpacity(0.5) : glintMuted(context, 0.10)),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 17, color: on ? glintAccent(context) : glintText(context, 0.55)),
+              const SizedBox(width: 7),
+              Text(label,
+                  style: TextStyle(
+                      color: on ? glintAccent(context) : glintText(context, 0.55),
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _setMode(String mode) async {
+    setState(() => _vaultMode = mode);
+    if (mode == 'queue') {
+      final q = await loadReadLater();
+      if (!mounted) return;
+      setState(() {
+        displayedPapers = q;
+        selectedCategory = 'All';
+      });
+    } else {
+      filterVault();
+    }
   }
 
   @override
@@ -2581,6 +2899,29 @@ class _VaultScreenState extends State<VaultScreen> {
   void _onTabTap() {
     // Vault lives at MainShell index 3.
     if (tabTapTicker.value == 3 && mounted) loadVault();
+  }
+
+  // AA.10: queue the whole Vault as a spoken playlist (commute podcast).
+  bool _preparingPlaylist = false;
+  Future<void> _listenToVault() async {
+    HapticFeedback.mediumImpact();
+    if (TtsService.instance.isPlaying.value) {
+      await TtsService.instance.pause();
+      setState(() {});
+      return;
+    }
+    if (displayedPapers.isEmpty) return;
+    setState(() => _preparingPlaylist = true);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('🎧 Glint AI is building your Vault playlist…'),
+        duration: Duration(seconds: 2),
+      ));
+    }
+    final script = await buildDeckListenScript(displayedPapers, limit: 10);
+    if (!mounted) return;
+    await TtsService.instance.start(script);
+    setState(() => _preparingPlaylist = false);
   }
 
   Future<void> loadVault() async {
@@ -2641,6 +2982,38 @@ class _VaultScreenState extends State<VaultScreen> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         scrolledUnderElevation: 0,
+        actions: [
+          if (savedPapers.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: SpringScale(
+                onTap: _preparingPlaylist ? () {} : _listenToVault,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: glintAccent(context).withOpacity(0.16),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: glintAccent(context).withOpacity(0.45)),
+                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    _preparingPlaylist
+                        ? SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: glintAccent(context)))
+                        : Icon(Icons.playlist_play, size: 18, color: glintAccent(context)),
+                    const SizedBox(width: 6),
+                    Text('Listen to all',
+                        style: TextStyle(
+                            color: glintAccent(context),
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700)),
+                  ]),
+                ),
+              ),
+            ),
+        ],
       ),
       body: AnimatedAuroraBackground(
         child: SafeArea(
@@ -2669,6 +3042,18 @@ class _VaultScreenState extends State<VaultScreen> {
                   ],
                 ),
               ),
+              // Saved / Read-Later segmented toggle.
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Row(
+                  children: [
+                    _vaultTab('saved', 'Saved', Icons.folder_special),
+                    const SizedBox(width: 8),
+                    _vaultTab('queue', 'Read Later', Icons.watch_later_outlined),
+                  ],
+                ),
+              ),
+              if (_vaultMode == 'saved')
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 child: GlassPanel(
@@ -3116,6 +3501,7 @@ class _DetailScreenState extends State<DetailScreen> {
                     style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Colors.white)),
                 background: _CoverImage(
                   imageUrl: widget.paper['image'] ?? '',
+                  articleUrl: widget.paper['url'] ?? '',
                   fallbackColors: widget.backgroundColors,
                 ),
               ),
@@ -3330,6 +3716,15 @@ class _DetailScreenState extends State<DetailScreen> {
                   border: glintAccent(context).withOpacity(0.5),
                   prompt:
                       "Give me a thorough technical deep-dive of how this works. Cover the mechanism, the key trade-offs, the assumptions, and the most important details. Use 4–6 paragraphs separated by blank lines.",
+                ),
+                const SizedBox(width: 8),
+                _aiChip(
+                  label: "Both Sides ⚖️",
+                  bg: Colors.purpleAccent.withOpacity(0.18),
+                  textColor: Colors.purpleAccent,
+                  border: Colors.purpleAccent.withOpacity(0.5),
+                  prompt:
+                      "Give me a balanced debate on this topic. Present the strongest case FOR it, then the strongest case AGAINST it, each in its own short paragraph headed 'For:' and 'Against:'. Stay fair to both sides, then end with a one-line balanced takeaway.",
                 ),
               ]),
             ),
@@ -3589,15 +3984,42 @@ class _CardThumbnailState extends State<CardThumbnail> {
 // COVER IMAGE for DetailScreen header — Image.network with
 // graceful fallback to the gradient palette + scrim overlay.
 // ============================================================
-class _CoverImage extends StatelessWidget {
+class _CoverImage extends StatefulWidget {
   final String imageUrl;
+  final String articleUrl;
   final List<Color> fallbackColors;
-  const _CoverImage({required this.imageUrl, required this.fallbackColors});
+  const _CoverImage({
+    required this.imageUrl,
+    this.articleUrl = '',
+    required this.fallbackColors,
+  });
+
+  @override
+  State<_CoverImage> createState() => _CoverImageState();
+}
+
+class _CoverImageState extends State<_CoverImage> {
+  String _resolved = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _resolved = widget.imageUrl;
+    // Many news/RSS items have no image field. Scrape the publisher's
+    // og:image so the detail screen shows a real cover, like the cards do.
+    if (_resolved.isEmpty && widget.articleUrl.isNotEmpty) {
+      OgImageService.fetchMeta(widget.articleUrl).then((meta) {
+        if (!mounted) return;
+        final og = meta.image ?? '';
+        if (og.isNotEmpty) setState(() => _resolved = og);
+      });
+    }
+  }
 
   Widget _fallback() => Container(
         decoration: BoxDecoration(
           gradient: LinearGradient(
-            colors: fallbackColors,
+            colors: widget.fallbackColors,
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
           ),
@@ -3612,9 +4034,9 @@ class _CoverImage extends StatelessWidget {
     return Stack(
       fit: StackFit.expand,
       children: [
-        if (imageUrl.isNotEmpty)
+        if (_resolved.isNotEmpty)
           CachedNetworkImage(
-            imageUrl: imageUrl,
+            imageUrl: _resolved,
             fit: BoxFit.cover,
             fadeInDuration: const Duration(milliseconds: 220),
             placeholder: (_, __) => _fallback(),
@@ -4878,6 +5300,26 @@ class TtsPlayerBar extends StatelessWidget {
                   ),
                   const SizedBox(width: 4),
                   _ctrl(context, Icons.skip_next, () => TtsService.instance.next()),
+                  const SizedBox(width: 6),
+                  // Playback speed — tap to cycle 0.75 / 1 / 1.25 / 1.5×.
+                  ValueListenableBuilder<double>(
+                    valueListenable: TtsService.instance.speed,
+                    builder: (context, sp, _) => SpringScale(
+                      onTap: () => TtsService.instance.cycleSpeed(),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: glintMuted(context, 0.14),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: Text('${sp == sp.roundToDouble() ? sp.toInt() : sp}×',
+                            style: TextStyle(
+                                color: glintText(context, 0.85),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700)),
+                      ),
+                    ),
+                  ),
                   const Spacer(),
                   // "I heard something — find the full story."
                   SpringScale(

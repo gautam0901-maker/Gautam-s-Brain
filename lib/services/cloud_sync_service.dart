@@ -45,6 +45,17 @@ class CloudSyncService {
     } catch (_) {}
   }
 
+  Future<void> pushReadLater(List<String> jsonItems) async {
+    final uid = _uid;
+    if (uid == null) return;
+    try {
+      await _users.doc(uid).collection('data').doc('read_later').set({
+        'items': jsonItems,
+        'updated': FieldValue.serverTimestamp(),
+      });
+    } catch (_) {}
+  }
+
   Future<void> pushSubs(List<String> topics) async {
     final uid = _uid;
     if (uid == null) return;
