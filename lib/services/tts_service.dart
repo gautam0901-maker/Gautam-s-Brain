@@ -70,26 +70,35 @@ class TtsService {
     await _tts.setSpeechRate((_baseRate * speed.value).clamp(0.1, 1.0));
     await _tts.setPitch(0.96); // very slightly lower = warmer, less robotic
     await _tts.setVolume(1.0);
-    // Prefer a high-quality / network voice if the device has one. We scan
-    // for en-US voices and pick the one most likely to be neural.
+    // Pick the BEST available voice by scoring. iOS ships excellent free
+    // Premium/Enhanced/Siri voices (com.apple.voice.premium.*, *.enhanced.*),
+    // and Android has Google neural voices (en-us-x-*-network). We strongly
+    // prefer those and avoid the robotic "compact" defaults.
     try {
       final voices = (await _tts.getVoices) as List?;
       if (voices != null) {
         Map? best;
+        int bestScore = -1000;
         for (final v in voices) {
           final name = (v['name'] ?? '').toString().toLowerCase();
+          final id = (v['identifier'] ?? v['name'] ?? '').toString().toLowerCase();
           final locale = (v['locale'] ?? '').toString().toLowerCase();
           if (!locale.startsWith('en')) continue;
-          // Heuristics: Google "neural"/"wavenet"/"network" voices sound best.
-          final isNice = name.contains('neural') ||
-              name.contains('wavenet') ||
-              name.contains('network') ||
-              name.contains('en-us-x');
-          if (isNice) {
+          final hay = '$name $id';
+          int score = 0;
+          if (hay.contains('premium')) score += 120;      // iOS 16+ best
+          if (hay.contains('enhanced')) score += 90;       // iOS downloadable
+          if (hay.contains('siri')) score += 85;           // iOS Siri voices
+          if (hay.contains('neural')) score += 80;         // Android/Google
+          if (hay.contains('wavenet')) score += 80;
+          if (hay.contains('network')) score += 60;        // Android online
+          if (hay.contains('en-us-x')) score += 40;        // Android local neural
+          if (hay.contains('compact')) score -= 60;        // iOS low quality
+          if (locale == 'en-us') score += 10;              // prefer US English
+          if (score > bestScore) {
+            bestScore = score;
             best = v;
-            break;
           }
-          best ??= v;
         }
         if (best != null) {
           await _tts.setVoice({

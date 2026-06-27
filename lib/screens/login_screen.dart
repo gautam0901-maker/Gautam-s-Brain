@@ -11,6 +11,14 @@ import '../theme.dart';
 import '../widgets/glint_logo.dart';
 import 'tech_feed.dart' show AnimatedAuroraBackground, SpringScale;
 
+// Feature flags — flip these ON once the matching iOS setup is done:
+//   • Apple: enable "Sign in with Apple" capability for the App ID in the
+//     Apple Developer portal + enable Apple provider in Firebase Auth.
+//   • Phone: upload an APNs Auth Key to Firebase (iOS phone auth needs it).
+// Until then they're hidden so they can't crash the app.
+const bool kEnableAppleSignIn = true;
+const bool kEnablePhoneSignIn = false;
+
 class LoginScreen extends StatefulWidget {
   /// Called when the user chooses to skip sign-in and browse as guest.
   final VoidCallback? onSkip;
@@ -98,7 +106,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     ),
 
                   // Apple first on Apple platforms (App Store guideline).
-                  if (_isApple) ...[
+                  if (_isApple && kEnableAppleSignIn) ...[
                     _AppleButton(
                       onTap: _busy ? null : () => _run(AuthService.instance.signInWithApple),
                     ),
@@ -121,15 +129,17 @@ class _LoginScreenState extends State<LoginScreen> {
                     fg: glintText(context),
                     onTap: _busy ? null : () => _openEmailSheet(),
                   ),
-                  const SizedBox(height: 12),
 
-                  _bigButton(
-                    label: 'Continue with Phone',
-                    icon: Icons.phone_iphone,
-                    bg: glintMuted(context, 0.10),
-                    fg: glintText(context),
-                    onTap: _busy ? null : () => _openPhoneSheet(),
-                  ),
+                  if (kEnablePhoneSignIn) ...[
+                    const SizedBox(height: 12),
+                    _bigButton(
+                      label: 'Continue with Phone',
+                      icon: Icons.phone_iphone,
+                      bg: glintMuted(context, 0.10),
+                      fg: glintText(context),
+                      onTap: _busy ? null : () => _openPhoneSheet(),
+                    ),
+                  ],
 
                   const SizedBox(height: 22),
                   if (_busy)
@@ -264,12 +274,16 @@ class _EmailSheetState extends State<_EmailSheet> {
   }
 
   String _msg(String raw) {
+    if (raw.contains('operation-not-allowed')) {
+      return 'Email sign-in is turned off. Enable Email/Password in Firebase → Authentication → Sign-in method.';
+    }
     if (raw.contains('email-already-in-use')) return 'Email already registered — switch to Sign In.';
     if (raw.contains('wrong-password') || raw.contains('invalid-credential')) return 'Wrong email or password.';
     if (raw.contains('user-not-found')) return 'No account with that email.';
     if (raw.contains('weak-password')) return 'Password must be at least 6 characters.';
     if (raw.contains('invalid-email')) return 'That email looks invalid.';
-    return 'Could not continue. Try again.';
+    if (raw.contains('network')) return 'Network error — check your connection.';
+    return 'Could not continue: ${raw.replaceAll(RegExp(r"\[.*?\]"), "").trim()}';
   }
 
   @override

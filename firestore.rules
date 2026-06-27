@@ -1,0 +1,30 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // A user can read/write only their own profile + synced data.
+    match /users/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+
+      // Synced state: vault, dislikes, subs (pinned topics), behavior, read_later.
+      // WITHOUT this block, the app's cloud writes are DENIED silently, so
+      // pinned topics never reach Firebase and don't appear on other devices.
+      match /data/{docId} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+      }
+
+      // Saved highlights.
+      match /highlights/{docId} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+      }
+    }
+
+    // Article comments (public read, signed-in write).
+    match /comments/{docId} {
+      allow read: if true;
+      allow create: if request.auth != null;
+      allow update, delete: if request.auth != null
+        && request.auth.uid == resource.data.uid;
+    }
+  }
+}

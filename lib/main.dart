@@ -139,8 +139,11 @@ class RootGateState extends State<RootGate> {
           return LoginScreen(onSkip: () => setState(() => _guest = true));
         }
         // Pull cloud state into local prefs on sign-in (idempotent —
-        // only fills empty keys, never overwrites local content).
-        unawaited(CloudSyncService.instance.pullToLocalIfMissing());
+        // only fills empty keys, never overwrites local content). When done,
+        // tell Discover to reload so freshly-pulled topics show up.
+        unawaited(CloudSyncService.instance
+            .pullToLocalIfMissing()
+            .then((_) => notifySubsChanged()));
         return StreamBuilder<UserProfile?>(
           stream: UserProfileService.instance.streamMyProfile(),
           builder: (context, profSnap) {

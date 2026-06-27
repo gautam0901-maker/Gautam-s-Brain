@@ -26,6 +26,11 @@
 		<string>$(FLUTTER_BUILD_NUMBER)</string>
 		<key>LSRequiresIPhoneOS</key>
 		<true/>
+		<!-- Glint only uses standard HTTPS (exempt) encryption. Declaring this
+		     skips the "Missing Compliance" hold so every build is immediately
+		     available to TestFlight testers. -->
+		<key>ITSAppUsesNonExemptEncryption</key>
+		<false/>
 		<!-- URL schemes. The `hiddenai` scheme powers in-app deep links.
 		     IMPORTANT: when you set up Google Sign-In on iOS, add a SECOND
 		     <dict> here whose CFBundleURLSchemes contains your REVERSED_CLIENT_ID
@@ -57,6 +62,10 @@
 		<!-- Permission usage strings — iOS rejects/crashes without these. -->
 		<key>NSLocationWhenInUseUsageDescription</key>
 		<string>Glint uses your location only to show nearby breaking news. It is never tracked or shared.</string>
+		<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+		<string>Glint uses your location only while you're using the app, to show nearby breaking news. It is never accessed in the background, tracked, or shared.</string>
+		<key>NSLocationAlwaysUsageDescription</key>
+		<string>Glint uses your location only while you're using the app, to show nearby breaking news. It is never accessed in the background, tracked, or shared.</string>
 		<key>NSUserTrackingUsageDescription</key>
 		<string>Glint does not track you across other apps.</string>
 		<key>UIApplicationSceneManifest</key>

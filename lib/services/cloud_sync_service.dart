@@ -127,12 +127,15 @@ class CloudSyncService {
         }
       }
 
+      // NOTE: the app stores subscriptions under 'subscribed_topics'
+      // (see _subsKey in tech_feed.dart). It MUST match here or pulled
+      // topics land in a dead key and Discover never sees them.
       final subsSnap = await dataCol.doc('subs').get();
-      final localSubs = prefs.getStringList('pinned_topics') ?? <String>[];
+      final localSubs = prefs.getStringList('subscribed_topics') ?? <String>[];
       if (localSubs.isEmpty && subsSnap.exists) {
         final topics = (subsSnap.data()?['topics'] as List?)?.cast<String>();
         if (topics != null && topics.isNotEmpty) {
-          await prefs.setStringList('pinned_topics', topics);
+          await prefs.setStringList('subscribed_topics', topics);
         }
       }
     } catch (_) {
