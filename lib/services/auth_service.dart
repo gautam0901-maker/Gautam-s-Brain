@@ -3,6 +3,7 @@
 // `authStateChanges` — no direct Firebase imports outside this file.
 
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'dart:math';
 import 'package:crypto/crypto.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -14,7 +15,16 @@ class AuthService {
   static final AuthService instance = AuthService._();
 
   final FirebaseAuth _auth = FirebaseAuth.instance;
-  final GoogleSignIn _google = GoogleSignIn();
+
+  // iOS needs the OAuth client ID passed explicitly (it's the reverse of the
+  // REVERSED_CLIENT_ID in GoogleService-Info.plist). This makes Google Sign-In
+  // work even if the plist isn't registered in the Xcode project. On Android
+  // the client id comes from google-services.json, so we pass null there.
+  static const String _iosGoogleClientId =
+      '73326190072-4840aubi6ndo723tp8reosa22c3ag7ur.apps.googleusercontent.com';
+  final GoogleSignIn _google = GoogleSignIn(
+    clientId: Platform.isIOS ? _iosGoogleClientId : null,
+  );
 
   User? get currentUser => _auth.currentUser;
   Stream<User?> get authStateChanges => _auth.authStateChanges();

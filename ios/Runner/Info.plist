@@ -26,10 +26,12 @@
 		<string>$(FLUTTER_BUILD_NUMBER)</string>
 		<key>LSRequiresIPhoneOS</key>
 		<true/>
-		<!-- URL schemes: Google Sign-In needs the REVERSED_CLIENT_ID from your
-	     iOS GoogleService-Info.plist. Replace the placeholder below with that
-	     value (looks like com.googleusercontent.apps.1234-abcd). The
-	     `hiddenai` scheme powers in-app deep links. -->
+		<!-- URL schemes. The `hiddenai` scheme powers in-app deep links.
+		     IMPORTANT: when you set up Google Sign-In on iOS, add a SECOND
+		     <dict> here whose CFBundleURLSchemes contains your REVERSED_CLIENT_ID
+		     from GoogleService-Info.plist (looks like
+		     com.googleusercontent.apps.1234-abcd). Do NOT use a placeholder —
+		     Apple rejects any scheme that isn't a real value. -->
 		<key>CFBundleURLTypes</key>
 		<array>
 			<dict>
@@ -37,7 +39,7 @@
 				<string>Editor</string>
 				<key>CFBundleURLSchemes</key>
 				<array>
-					<string>REVERSED_CLIENT_ID_GOES_HERE</string>
+					<string>hiddenai</string>
 				</array>
 			</dict>
 			<dict>
@@ -45,7 +47,7 @@
 				<string>Editor</string>
 				<key>CFBundleURLSchemes</key>
 				<array>
-					<string>hiddenai</string>
+					<string>com.googleusercontent.apps.73326190072-4840aubi6ndo723tp8reosa22c3ag7ur</string>
 				</array>
 			</dict>
 		</array>
