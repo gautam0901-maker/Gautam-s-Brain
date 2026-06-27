@@ -2,9 +2,11 @@ import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_displaymode/flutter_displaymode.dart';
 import 'firebase_options.dart';
 import 'screens/launch_screen.dart';
+import 'screens/login_screen.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/tech_feed.dart';
 import 'screens/trending_and_news.dart';
@@ -27,6 +29,15 @@ final ValueNotifier<int> tabTapTicker = ValueNotifier<int>(-1);
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Lock phones to portrait (the swipe deck + reading UI are designed for it).
+  // Tablets/iPads keep all orientations. shortestSide >= 600 ≈ tablet.
+  final shortestSide =
+      WidgetsBinding.instance.platformDispatcher.views.first.physicalSize.shortestSide /
+          WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio;
+  if (shortestSide < 600) {
+    await SystemChrome.setPreferredOrientations(
+        [DeviceOrientation.portraitUp, DeviceOrientation.portraitDown]);
+  }
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
@@ -93,6 +104,8 @@ class RootGate extends StatefulWidget {
 
 class RootGateState extends State<RootGate> {
   StreamSubscription<String>? _linkSub;
+  // True once the user taps "Maybe later — just browse" on the login screen.
+  bool _guest = false;
 
   @override
   void initState() {
@@ -119,7 +132,12 @@ class RootGateState extends State<RootGate> {
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, authSnap) {
         final user = authSnap.data;
-        if (user == null) return const MainShell();
+        if (user == null) {
+          // Signed out → show the login screen, unless the user chose to
+          // browse as a guest this session.
+          if (_guest) return const MainShell();
+          return LoginScreen(onSkip: () => setState(() => _guest = true));
+        }
         // Pull cloud state into local prefs on sign-in (idempotent —
         // only fills empty keys, never overwrites local content).
         unawaited(CloudSyncService.instance.pullToLocalIfMissing());

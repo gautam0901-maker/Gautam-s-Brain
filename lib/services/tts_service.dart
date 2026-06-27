@@ -49,6 +49,23 @@ class TtsService {
 
   Future<void> _init() async {
     if (_inited) return;
+    // iOS: TTS is SILENT unless we claim a playback audio session. This is
+    // the #1 reason Live Listen "doesn't work" on iPhone.
+    try {
+      await _tts.setSharedInstance(true);
+      await _tts.setIosAudioCategory(
+        IosTextToSpeechAudioCategory.playback,
+        [
+          IosTextToSpeechAudioCategoryOptions.allowBluetooth,
+          IosTextToSpeechAudioCategoryOptions.allowBluetoothA2DP,
+          IosTextToSpeechAudioCategoryOptions.mixWithOthers,
+          IosTextToSpeechAudioCategoryOptions.defaultToSpeaker,
+        ],
+        IosTextToSpeechAudioMode.spokenAudio,
+      );
+    } catch (_) {
+      // Not on iOS / older plugin — safe to ignore.
+    }
     // Slow + calm by default. The speed multiplier (1.0×) scales this.
     await _tts.setSpeechRate((_baseRate * speed.value).clamp(0.1, 1.0));
     await _tts.setPitch(0.96); // very slightly lower = warmer, less robotic

@@ -31,8 +31,15 @@ class NotificationService {
   Future<void> init() async {
     if (_ready) return;
     tz.initializeTimeZones();
+    // iOS (Darwin) needs its own init or local notifications silently no-op.
+    // requestXPermission:false here — we ask explicitly in requestPermission().
     const init = InitializationSettings(
       android: AndroidInitializationSettings('@mipmap/launcher_icon'),
+      iOS: DarwinInitializationSettings(
+        requestAlertPermission: false,
+        requestBadgePermission: false,
+        requestSoundPermission: false,
+      ),
     );
     await _plugin.initialize(init);
     // Create channel up-front so first scheduled notification doesn't fail.
@@ -47,12 +54,20 @@ class NotificationService {
     _ready = true;
   }
 
-  /// Asks for POST_NOTIFICATIONS on Android 13+ and SCHEDULE_EXACT_ALARM on
-  /// Android 12+. Returns true when both are granted.
+  /// Requests notification permission on both platforms. Android 13+ uses
+  /// POST_NOTIFICATIONS; iOS uses the native alert/badge/sound prompt.
   Future<bool> requestPermission() async {
+    // iOS: ask through the plugin so the system prompt appears.
+    final iosImpl = _plugin.resolvePlatformSpecificImplementation<
+        IOSFlutterLocalNotificationsPlugin>();
+    if (iosImpl != null) {
+      final granted = await iosImpl.requestPermissions(
+          alert: true, badge: true, sound: true);
+      return granted ?? false;
+    }
+    // Android.
     final ok = await Permission.notification.request();
     if (!ok.isGranted) return false;
-    // SCHEDULE_EXACT_ALARM is optional on most devices; ignore failure.
     await Permission.scheduleExactAlarm.request();
     return true;
   }

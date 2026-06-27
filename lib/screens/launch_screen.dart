@@ -10,6 +10,7 @@
 
 import 'package:flutter/material.dart';
 import '../main.dart' show RootGate;
+import '../widgets/glint_logo.dart';
 import 'tech_feed.dart' show AnimatedAuroraBackground;
 
 class AnimatedLaunchScreen extends StatefulWidget {
@@ -21,7 +22,6 @@ class AnimatedLaunchScreen extends StatefulWidget {
 class _AnimatedLaunchScreenState extends State<AnimatedLaunchScreen>
     with TickerProviderStateMixin {
   late final AnimationController _logoCtl;
-  late final AnimationController _glowCtl;
   late final Animation<double> _logoScale;
   late final Animation<double> _logoOpacity;
   late final Animation<double> _titleOpacity;
@@ -67,12 +67,6 @@ class _AnimatedLaunchScreenState extends State<AnimatedLaunchScreen>
             parent: _logoCtl,
             curve: const Interval(0.55, 0.95, curve: Curves.fastEaseInToSlowEaseOut)));
 
-    // Continuous gentle pulse for the logo's outer glow.
-    _glowCtl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 2400),
-    )..repeat(reverse: true);
-
     // After the reveal + brief hold, push RootGate with a clean fade +
     // gentle scale. No Hero — that was lagging because of the route
     // morphing over BackdropFilter / glow layers. This feels smooth.
@@ -106,7 +100,6 @@ class _AnimatedLaunchScreenState extends State<AnimatedLaunchScreen>
   @override
   void dispose() {
     _logoCtl.dispose();
-    _glowCtl.dispose();
     super.dispose();
   }
 
@@ -120,55 +113,17 @@ class _AnimatedLaunchScreenState extends State<AnimatedLaunchScreen>
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // Logo + pulsing glow. The Hero around the image lets it
-                // morph into the small AppBar logo on Discover during the
-                // route transition.
+                // Shared Hero logo — flies to the login screen on the
+                // route transition when the user is signed out.
                 AnimatedBuilder(
-                  animation: Listenable.merge([_logoCtl, _glowCtl]),
-                  builder: (context, _) {
-                    final glow = 0.35 + _glowCtl.value * 0.25;
+                  animation: _logoCtl,
+                  builder: (context, child) {
                     return Transform.scale(
                       scale: _logoScale.value,
-                      child: Opacity(
-                        opacity: _logoOpacity.value,
-                        child: Container(
-                          width: 120,
-                          height: 120,
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(28),
-                            color: Colors.white.withOpacity(0.04),
-                            border: Border.all(color: Colors.white.withOpacity(0.10)),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.cyanAccent.withOpacity(glow * 0.5),
-                                blurRadius: 48,
-                                spreadRadius: 4,
-                              ),
-                              BoxShadow(
-                                color: Colors.purpleAccent.withOpacity(glow * 0.3),
-                                blurRadius: 64,
-                                spreadRadius: 0,
-                              ),
-                            ],
-                          ),
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(28),
-                            child: Image.asset(
-                              'images/a.png',
-                              fit: BoxFit.cover,
-                              errorBuilder: (_, __, ___) => const Center(
-                                child: Text('G',
-                                    style: TextStyle(
-                                        color: Colors.cyanAccent,
-                                        fontSize: 64,
-                                        fontWeight: FontWeight.w900)),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
+                      child: Opacity(opacity: _logoOpacity.value, child: child),
                     );
                   },
+                  child: const GlintLogoHero(size: 120),
                 ),
                 const SizedBox(height: 32),
                 FadeTransition(

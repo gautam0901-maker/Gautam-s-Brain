@@ -141,11 +141,16 @@ class UserProfile {
   final String professionId;
   final List<String> domains;
   final String countryCode;
+  // "Understanding You" extras (iOS launch).
+  final String interests; // free-text: what the user wants to follow
+  final String depth;     // 'quick' | 'balanced' | 'deep'
   final DateTime? updatedAt;
   const UserProfile({
     required this.professionId,
     required this.domains,
     required this.countryCode,
+    this.interests = '',
+    this.depth = 'balanced',
     this.updatedAt,
   });
 
@@ -159,6 +164,8 @@ class UserProfile {
         'professionId': professionId,
         'domains': domains,
         'countryCode': countryCode,
+        'interests': interests,
+        'depth': depth,
         'updatedAt': FieldValue.serverTimestamp(),
       };
 
@@ -168,6 +175,8 @@ class UserProfile {
             .map((e) => e.toString())
             .toList(),
         countryCode: (m['countryCode'] ?? 'WORLD').toString(),
+        interests: (m['interests'] ?? '').toString(),
+        depth: (m['depth'] ?? 'balanced').toString(),
         updatedAt: (m['updatedAt'] as Timestamp?)?.toDate(),
       );
 }

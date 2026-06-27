@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Required for "Sign in with Apple". Also enable the capability in the
+	     Apple Developer portal for your App ID. -->
+	<key>com.apple.developer.applesignin</key>
+	<array>
+		<string>Default</string>
+	</array>
+	<!-- Push notifications (APNs). Set to "production" for App Store builds.
+	     Codemagic/Xcode usually manage this automatically. -->
+	<key>aps-environment</key>
+	<string>development</string>
+</dict>
+</plist>

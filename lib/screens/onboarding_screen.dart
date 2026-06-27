@@ -7,12 +7,14 @@
 
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import '../services/ai_service.dart';
 import '../services/user_profile_service.dart';
 import '../theme.dart';
 import 'tech_feed.dart'
     show
         AnimatedAuroraBackground,
         GlassPanel,
+        PollinationsAI,
         SpringScale,
         addSubscription,
         loadSubscriptions,
@@ -30,6 +32,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   late String _professionId;
   late Set<String> _domains;
   late String _countryCode;
+  late String _depth;
+  final TextEditingController _interests = TextEditingController();
   bool _saving = false;
 
   @override
@@ -38,6 +42,14 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     _professionId = widget.initial?.professionId ?? 'developer';
     _domains = (widget.initial?.domains ?? const <String>[]).toSet();
     _countryCode = widget.initial?.countryCode ?? 'WORLD';
+    _depth = widget.initial?.depth ?? 'balanced';
+    _interests.text = widget.initial?.interests ?? '';
+  }
+
+  @override
+  void dispose() {
+    _interests.dispose();
+    super.dispose();
   }
 
   Future<void> _save() async {
@@ -55,6 +67,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         professionId: _professionId,
         domains: _domains.toList(),
         countryCode: _countryCode,
+        interests: _interests.text.trim(),
+        depth: _depth,
       );
       await UserProfileService.instance.save(profile);
 
@@ -65,6 +79,28 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         if (!existing.contains(d.toLowerCase())) {
           await addSubscription(d);
         }
+      }
+      // Let Glint AI read the free-text answer and pin a few real topics
+      // from it (e.g. "I love F1 and cooking" → "Formula 1", "Cooking").
+      final free = _interests.text.trim();
+      if (free.length > 4) {
+        try {
+          final extracted = await AIService.instance.generate(
+            prompt:
+                "From this sentence, extract up to 4 concrete news/interest topics "
+                "(1-3 words each), comma-separated, Title Case, no extra words:\n\"$free\"",
+            pollinationsFallback: PollinationsAI.generate,
+            maxTokens: 60,
+          );
+          if (extracted != null) {
+            for (final t in extracted.split(RegExp(r'[,\n]'))) {
+              final topic = t.trim().replaceAll(RegExp(r'[."’]'), '');
+              if (topic.length >= 3 && topic.length <= 30) {
+                await addSubscription(topic);
+              }
+            }
+          }
+        } catch (_) {}
       }
       notifySubsChanged();
 
@@ -131,7 +167,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   children: [
                     if (!widget.isEdit) ...[
                       Text(
-                        "Let's tune your feed",
+                        "Let's get to know you",
                         style: TextStyle(
                             color: glintText(context),
                             fontSize: 28,
@@ -140,7 +176,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        "Three quick questions so Discover shows things you actually care about.",
+                        "A few quick questions so Glint AI shows you exactly what you care about.",
                         style: TextStyle(
                             color: glintText(context, 0.6), fontSize: 14),
                       ),
@@ -161,6 +197,39 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                             .map((d) => _domainChip(d))
                             .toList(),
                       ),
+                    ),
+                    const SizedBox(height: 24),
+                    _sectionLabel("TELL GLINT AI WHAT YOU'RE INTO"),
+                    const SizedBox(height: 6),
+                    Text(
+                      "In your own words — Glint AI reads this to tune your feed. e.g. \"F1, indie games, space launches, and AI startups.\"",
+                      style: TextStyle(color: glintText(context, 0.5), fontSize: 12),
+                    ),
+                    const SizedBox(height: 10),
+                    GlassPanel(
+                      padding: const EdgeInsets.all(12),
+                      child: TextField(
+                        controller: _interests,
+                        maxLines: 3,
+                        style: TextStyle(color: glintText(context), fontSize: 15),
+                        decoration: InputDecoration(
+                          hintText: "What do you want to follow?",
+                          hintStyle: TextStyle(color: glintText(context, 0.4)),
+                          border: InputBorder.none,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    _sectionLabel("HOW DEEP DO YOU LIKE IT"),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        _depthChip('quick', 'Quick headlines', Icons.bolt),
+                        const SizedBox(width: 8),
+                        _depthChip('balanced', 'Balanced', Icons.balance),
+                        const SizedBox(width: 8),
+                        _depthChip('deep', 'Deep dives', Icons.menu_book),
+                      ],
                     ),
                     const SizedBox(height: 24),
                     _sectionLabel("WHERE ARE YOU"),
@@ -293,6 +362,37 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     : Icons.radio_button_off,
                 color: selected ? glintAccent(context) : glintMuted(context, 0.30),
               ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _depthChip(String id, String label, IconData icon) {
+    final on = _depth == id;
+    return Expanded(
+      child: SpringScale(
+        onTap: () => setState(() => _depth = id),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          decoration: BoxDecoration(
+            color: on ? glintAccent(context).withOpacity(0.18) : glintMuted(context, 0.05),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+                color: on ? glintAccent(context).withOpacity(0.6) : glintMuted(context, 0.10)),
+          ),
+          child: Column(
+            children: [
+              Icon(icon, color: on ? glintAccent(context) : glintText(context, 0.5), size: 22),
+              const SizedBox(height: 6),
+              Text(label,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                      color: on ? glintAccent(context) : glintText(context, 0.6),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700)),
             ],
           ),
         ),
