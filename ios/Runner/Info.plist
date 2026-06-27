@@ -74,6 +74,9 @@
 		<string>Glint uses your location only while you're using the app, to show nearby breaking news. It is never accessed in the background, tracked, or shared.</string>
 		<key>NSUserTrackingUsageDescription</key>
 		<string>Glint does not track you across other apps.</string>
+		<!-- Microphone permission: required by flutter_tts for text-to-speech functionality. -->
+		<key>NSMicrophoneUsageDescription</key>
+		<string>Glint uses microphone access to provide text-to-speech audio reading features. Your microphone is never recorded or accessed without your explicit action.</string>
 		<key>UIApplicationSceneManifest</key>
 		<dict>
 			<key>UIApplicationSupportsMultipleScenes</key>
