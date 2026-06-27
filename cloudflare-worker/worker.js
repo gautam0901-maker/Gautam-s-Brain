@@ -107,13 +107,14 @@ async function handleTts(request, env) {
   
   if (!text.trim()) return json({ error: 'no text' }, 400);
 
-  // Define the chain of TTS providers to try.
+  // Define the chain of TTS providers to try. Azure first — it has real
+  // broadcast "newscast" neural voices (the news-anchor sound Glint wants).
   const providerChain = [
     {
-      name: 'groq',
-      enabled: env.GROQ_KEY,
-      handler: () => groqTts(env.GROQ_KEY, text, voice),
-      contentType: 'audio/wav',
+      name: 'azure',
+      enabled: env.AZURE_SPEECH_KEY,
+      handler: () => azureTts(env.AZURE_SPEECH_KEY, azureRegion, text, voice),
+      contentType: 'audio/mpeg',
     },
     {
       name: 'google',
@@ -122,10 +123,10 @@ async function handleTts(request, env) {
       contentType: 'audio/mpeg',
     },
     {
-      name: 'azure',
-      enabled: env.AZURE_SPEECH_KEY,
-      handler: () => azureTts(env.AZURE_SPEECH_KEY, azureRegion, text, voice),
-      contentType: 'audio/mpeg',
+      name: 'groq',
+      enabled: env.GROQ_KEY,
+      handler: () => groqTts(env.GROQ_KEY, text, voice),
+      contentType: 'audio/wav',
     },
   ];
 
@@ -211,27 +212,42 @@ async function googleCloudTts(key, text, voice) {
   }
 }
 
-// Microsoft Azure Speech Services (free tier: 5M requests/month)
-// Uses matching voice personalities to Google Cloud for consistency
+// Microsoft Azure Speech Services (free tier: 0.5M chars/month).
+// Maps Glint's voice choices to Azure NEWSCAST-capable neural voices and
+// wraps the text in an `mstts:express-as` newscast style → genuine TV news
+// anchor delivery. Higher 24kHz/48kbps mp3 for crisp audio.
 async function azureTts(key, region, text, voice) {
   try {
+    // Only Aria / Jenny / Guy / Jane / Nancy support newscast styles, so we
+    // map every choice onto one of those (with its best-supported style).
     const azureVoiceMap = {
-      'Celeste-PlayAI': 'en-US-AmberNeural',      // warm, mature female
-      'Arista-PlayAI': 'en-US-JennyNeural',       // bright, youthful female
-      'Quinn-PlayAI': 'en-US-ElizaNeural',        // calm, clear female
-      'Fritz-PlayAI': 'en-US-GuyNeural',          // clear, professional male
-      'Atlas-PlayAI': 'en-US-EricNeural',         // deep, calm male
-      'Indigo-PlayAI': 'en-US-CoraNeural',        // soft, natural female
+      'Celeste-PlayAI': { name: 'en-US-AriaNeural', style: 'newscast-casual' },
+      'Arista-PlayAI': { name: 'en-US-JennyNeural', style: 'newscast' },
+      'Quinn-PlayAI': { name: 'en-US-AriaNeural', style: 'newscast-formal' },
+      'Fritz-PlayAI': { name: 'en-US-GuyNeural', style: 'newscast' },
+      'Atlas-PlayAI': { name: 'en-US-GuyNeural', style: 'newscast' },
+      'Indigo-PlayAI': { name: 'en-US-JennyNeural', style: 'newscast' },
     };
-    
-    const voiceName = azureVoiceMap[voice] || 'en-US-AmberNeural';
-    
-    const ssml = `<speak version='1.0' xml:lang='en-US'>
-      <voice name='${voiceName}'>
-        <prosody pitch='0%' rate='0.95'>${escapeXml(text)}</prosody>
-      </voice>
-    </speak>`;
-    
+    // Allow the app to pass a raw Azure voice name directly too.
+    let voiceName, style;
+    if (voice && voice.includes('Neural')) {
+      voiceName = voice;
+      style = 'newscast-casual';
+    } else {
+      const cfg = azureVoiceMap[voice] || azureVoiceMap['Celeste-PlayAI'];
+      voiceName = cfg.name;
+      style = cfg.style;
+    }
+
+    const ssml =
+      `<speak version='1.0' xml:lang='en-US' ` +
+      `xmlns='http://www.w3.org/2001/10/synthesis' ` +
+      `xmlns:mstts='https://www.w3.org/2001/mstts'>` +
+      `<voice name='${voiceName}'>` +
+      `<mstts:express-as style='${style}'>` +
+      `<prosody rate='-2%'>${escapeXml(text)}</prosody>` +
+      `</mstts:express-as></voice></speak>`;
+
     const resp = await fetch(
       `https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`,
       {
@@ -239,15 +255,17 @@ async function azureTts(key, region, text, voice) {
         headers: {
           'Ocp-Apim-Subscription-Key': key,
           'Content-Type': 'application/ssml+xml',
-          'X-Microsoft-OutputFormat': 'audio-16khz-32kbitrate-mono-mp3',
+          'X-Microsoft-OutputFormat': 'audio-24khz-48kbitrate-mono-mp3',
+          'User-Agent': 'glint-news',
         },
         body: ssml,
-        signal: AbortSignal.timeout(20000),
+        signal: AbortSignal.timeout(25000),
       }
     );
-    
+
     if (!resp.ok) return null;
-    return await resp.arrayBuffer();
+    const buf = await resp.arrayBuffer();
+    return buf && buf.byteLength > 1000 ? buf : null;
   } catch {
     return null;
   }
