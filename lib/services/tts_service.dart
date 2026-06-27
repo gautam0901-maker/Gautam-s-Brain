@@ -36,12 +36,12 @@ class TtsService {
   /// sentence so the new rate takes effect immediately.
   Future<void> cycleSpeed() async {
     final i = speedSteps.indexOf(speed.value);
-    final next = speedSteps[(i + 1) % speedSteps.length];
-    speed.value = next;
-    await _tts.setSpeechRate((_baseRate * next).clamp(0.1, 1.0));
+    final nextSpeed = speedSteps[(i + 1) % speedSteps.length];
+    speed.value = nextSpeed;
+    await _tts.setSpeechRate((_baseRate * nextSpeed).clamp(0.1, 1.0));
+    // Re-speak the current sentence at the new rate WITHOUT flipping to pause.
     if (_isPlaying && _index >= 0 && _index < _sentences.length) {
-      await _tts.stop();
-      await _speakCurrent();
+      await _restartSpeak();
     }
   }
 
@@ -122,10 +122,28 @@ class TtsService {
       }
     });
     _tts.setCancelHandler(() {
+      // Ignore cancels caused by an intentional restart (speed change /
+      // next / previous) — otherwise the player flips to "paused" while it
+      // actually keeps speaking.
+      if (_restarting) return;
       _isPlaying = false;
       isPlaying.value = false;
     });
     _inited = true;
+  }
+
+  bool _restarting = false;
+
+  /// Stop the current utterance and immediately speak [_index] again, keeping
+  /// the playing state intact (used by speed change + skip).
+  Future<void> _restartSpeak() async {
+    _restarting = true;
+    await _tts.stop();
+    _stopped = false;
+    _isPlaying = true;
+    isPlaying.value = true;
+    await _speakCurrent();
+    _restarting = false;
   }
 
   /// Strips characters/markup that TTS engines read literally as symbols
@@ -201,27 +219,21 @@ class TtsService {
   Future<void> next() async {
     if (_index < _sentences.length - 1) {
       _index++;
-      await _tts.stop();
-      await _speakCurrent();
+      await _restartSpeak();
     }
   }
 
   Future<void> previous() async {
     if (_index > 0) {
       _index--;
-      await _tts.stop();
-      await _speakCurrent();
+      await _restartSpeak();
     }
   }
 
   Future<void> jumpTo(int i) async {
     if (i < 0 || i >= _sentences.length) return;
     _index = i;
-    _stopped = false;
-    _isPlaying = true;
-    isPlaying.value = true;
-    await _tts.stop();
-    await _speakCurrent();
+    await _restartSpeak();
   }
 
   String currentSentenceText() {

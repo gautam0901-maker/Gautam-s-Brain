@@ -1076,6 +1076,43 @@ Future<String> buildDeckListenScript(List<Map<String, String>> items,
   return TtsService.cleanForSpeech(fb.toString());
 }
 
+/// Top-level Google News search for a topic — usable from any screen
+/// (Discover topic mode + Trending interest injection). Covers ANY subject.
+Future<List<Map<String, String>>> googleNewsTopic(String topic,
+    {int take = 10}) async {
+  try {
+    final uri = Uri.parse(
+        'https://news.google.com/rss/search?q=${Uri.encodeQueryComponent(topic)}&hl=en-US&gl=US&ceid=US:en');
+    final resp = await http.get(uri).timeout(const Duration(seconds: 12));
+    if (resp.statusCode != 200) return [];
+    final doc = xml.XmlDocument.parse(resp.body);
+    final out = <Map<String, String>>[];
+    for (final it in doc.findAllElements('item').take(take)) {
+      String tag(String n) =>
+          it.findElements(n).isEmpty ? '' : it.findElements(n).first.innerText;
+      final title = tag('title');
+      final link = tag('link');
+      if (title.isEmpty || link.isEmpty) continue;
+      final src = tag('source').isEmpty ? 'Google News' : tag('source');
+      out.add({
+        'title': title,
+        'url': link,
+        'source': src,
+        'author': src,
+        'summary': tag('description')
+            .replaceAll(RegExp(r'<[^>]*>'), ' ')
+            .replaceAll('&nbsp;', ' ')
+            .replaceAll(RegExp(r'\s+'), ' ')
+            .trim(),
+        'image': '',
+      });
+    }
+    return out;
+  } catch (_) {
+    return [];
+  }
+}
+
 /// Adds an item's title to the dislikes list (negative signal). Shared by
 /// the long-press "Skip" action and the swipe-left flow.
 Future<void> markItemDisliked(Map<String, String> item) async {
@@ -1696,25 +1733,60 @@ class _TechFeedScreenState extends State<TechFeedScreen> {
     }
   }
 
-  /// Hits every source for a single topic (or general if topic is null).
-  /// Returns raw results — no dedup, no setState — for the caller to merge.
+  /// Is this a tech/developer topic? Decides whether to query the dev
+  /// sources (GitHub/HN/arXiv/Dev.to) — which return "how I built X in Rust"
+  /// junk for non-tech topics like travel/fashion/cars.
+  static bool isTechTopic(String t) {
+    final s = ' ${t.toLowerCase()} ';
+    const tech = [
+      'ai', 'a.i', 'artificial intelligence', 'machine learning', ' ml ',
+      'deep learning', 'llm', 'neural', 'data science', 'programming',
+      'coding', 'developer', 'software', 'web dev', 'app dev', 'devops',
+      'cloud', 'cyber', 'security', 'blockchain', 'crypto', 'web3',
+      'quantum', 'robotics', 'hardware', 'iot', 'startup', 'saas', 'api',
+      'database', 'linux', 'open source', 'opensource', 'github', 'rust',
+      'python', 'javascript', 'typescript', 'flutter', 'react', 'kubernetes',
+      'docker', 'gpu', 'semiconductor', 'chip', 'tech', 'computer', 'coding',
+      'engineering', 'gadget', 'smartphone',
+    ];
+    return tech.any((k) => s.contains(k));
+  }
+
+  /// Hits sources for a single topic (or general if topic is null). Returns
+  /// raw results — no dedup, no setState — for the caller to merge.
   Future<List<Map<String, String>>> _fetchForOneTopic({
     String? topic,
     int daysBack = 7,
   }) async {
     try {
       final isTopicMode = topic != null && topic.isNotEmpty;
-      final batches = await Future.wait<List<Map<String, String>>>([
-        _fetchArxiv(topic: topic),
-        _fetchGithub(topic: topic, daysBack: daysBack),
-        _fetchHackerNews(topic: topic),
-        _fetchReddit(topic: topic),
-        _fetchDevto(topic: topic),
-        // In topic mode the tech sources (arXiv/GitHub/HN) often have little
-        // for non-tech topics like "cars" or "cycling". Google News search
-        // covers ANY subject, so pinned topics actually return relevant news.
-        if (isTopicMode) _fetchTopicNews(topic) else _fetchAllRss(),
-      ]);
+      final futures = <Future<List<Map<String, String>>>>[];
+      if (isTopicMode) {
+        // Google News covers ANY subject — always include it for topics.
+        futures.add(_fetchTopicNews(topic));
+        // Only add the dev sources when the topic is actually tech; otherwise
+        // a "travel" search on GitHub/HN returns developer noise.
+        if (isTechTopic(topic)) {
+          futures.addAll([
+            _fetchArxiv(topic: topic),
+            _fetchGithub(topic: topic, daysBack: daysBack),
+            _fetchHackerNews(topic: topic),
+            _fetchReddit(topic: topic),
+            _fetchDevto(topic: topic),
+          ]);
+        }
+      } else {
+        // General feed (no pinned topic) — the curated tech + RSS mix.
+        futures.addAll([
+          _fetchArxiv(topic: topic),
+          _fetchGithub(topic: topic, daysBack: daysBack),
+          _fetchHackerNews(topic: topic),
+          _fetchReddit(topic: topic),
+          _fetchDevto(topic: topic),
+          _fetchAllRss(),
+        ]);
+      }
+      final batches = await Future.wait(futures);
       return batches.expand((b) => b).toList();
     } catch (e) {
       print('⚠️ _fetchForOneTopic error: $e');

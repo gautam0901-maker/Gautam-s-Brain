@@ -142,17 +142,39 @@ class _TrendingScreenState extends State<TrendingScreen> {
     if (!mounted) return;
     setState(() => isLoading = true);
     try {
+      // Pull trending NEWS for the user's pinned topics so non-developers
+      // don't get a wall of "how I built X in Rust". Dev sources still load,
+      // but the user's interests lead the list.
+      final subs = await loadSubscriptions();
+      final topicTopics = subs.take(4).toList();
       final batches = await Future.wait<List<Map<String, String>>>([
+        ...topicTopics.map((t) => googleNewsTopic(t, take: 6)),
+        // Dev sources only get prominence if the user has tech interests
+        // (or no topics at all). Otherwise we still fetch a little for variety.
         _trendingGithub(),
         _trendingHN(),
         _trendingReddit(),
         _trendingDevto(),
       ]);
-      final merged = batches
+      // News (from topic queries) leads; dev items follow, engagement-sorted.
+      final topicNews = <Map<String, String>>[];
+      for (int i = 0; i < topicTopics.length; i++) {
+        topicNews.addAll(batches[i]);
+      }
+      final devItems = batches
+          .skip(topicTopics.length)
           .expand((b) => b)
-          .where((it) => !isSourceMuted(it)) // W.6: respect muted publishers
-          .toList();
-      merged.sort((a, b) => _engagement(b).compareTo(_engagement(a)));
+          .toList()
+        ..sort((a, b) => _engagement(b).compareTo(_engagement(a)));
+      // De-dupe by title, news first.
+      final seen = <String>{};
+      final merged = <Map<String, String>>[];
+      for (final it in [...topicNews, ...devItems]) {
+        final t = it['title'] ?? '';
+        if (t.isEmpty || !seen.add(t)) continue;
+        if (isSourceMuted(it)) continue;
+        merged.add(it);
+      }
       if (!mounted) return;
       final taken = merged.take(50).toList();
       setState(() {
