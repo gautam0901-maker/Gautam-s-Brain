@@ -16,6 +16,11 @@ export default {
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: cors() });
     }
+    const url = new URL(request.url);
+    // 🔊 Text-to-speech route — Groq PlayAI TTS → audio bytes.
+    if (url.pathname === '/tts') {
+      return handleTts(request, env);
+    }
     // Health check — open the worker URL in a browser to see "ok".
     if (request.method === 'GET') {
       return json({ ok: true, service: 'glint-ai' });
@@ -75,6 +80,61 @@ function cors() {
     'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, x-glint-token',
   };
+}
+
+// ── 🔊 Text-to-speech: Groq PlayAI TTS → WAV bytes ────────────────────────
+// POST /tts  { text, voice }  → audio/wav (or 502 JSON if it fails).
+// The app falls back to the device voice when this returns non-audio.
+// NOTE: enable the `playai-tts` model once in the Groq console (accept terms)
+// or every call 400s. Free tier has per-minute limits — fine for one user.
+async function handleTts(request, env) {
+  if (request.method !== 'POST') return json({ error: 'POST only' }, 405);
+  if (env.APP_TOKEN && request.headers.get('x-glint-token') !== env.APP_TOKEN) {
+    return json({ error: 'unauthorized' }, 401);
+  }
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: 'bad json' }, 400);
+  }
+  const text = (body.text || '').toString().slice(0, 9000);
+  const voice = (body.voice || 'Celeste-PlayAI').toString();
+  if (!text.trim()) return json({ error: 'no text' }, 400);
+
+  if (env.GROQ_KEY) {
+    const audio = await groqTts(env.GROQ_KEY, text, voice);
+    if (audio) {
+      return new Response(audio, {
+        headers: { 'Content-Type': 'audio/wav', ...cors() },
+      });
+    }
+  }
+  return json({ error: 'tts failed' }, 502);
+}
+
+async function groqTts(key, text, voice) {
+  try {
+    const resp = await fetch('https://api.groq.com/openai/v1/audio/speech', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${key}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'playai-tts',
+        input: text,
+        voice,
+        response_format: 'wav',
+      }),
+      signal: AbortSignal.timeout(25000),
+    });
+    if (!resp.ok) return null;
+    const buf = await resp.arrayBuffer();
+    return buf && buf.byteLength > 1000 ? buf : null;
+  } catch {
+    return null;
+  }
 }
 
 function json(obj, status = 200) {

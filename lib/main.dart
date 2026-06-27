@@ -4,6 +4,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_displaymode/flutter_displaymode.dart';
+import 'package:just_audio_background/just_audio_background.dart';
 import 'firebase_options.dart';
 import 'screens/launch_screen.dart';
 import 'screens/login_screen.dart';
@@ -41,11 +42,23 @@ void main() async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+  // Audio Engine: lock-screen / background controls for Live Listen.
+  // Safe even if the user never uses cloud audio (device TTS ignores it).
+  try {
+    await JustAudioBackground.init(
+      androidNotificationChannelId: 'com.glint.audio',
+      androidNotificationChannelName: 'Glint Live Listen',
+      androidNotificationOngoing: true,
+      androidStopForegroundOnPause: true,
+    );
+  } catch (_) {}
   // Read the user's saved theme pref before first paint — avoids a flash.
   await loadThemeModePref();
   // Load muted sources into the in-memory cache so feed filters work
   // from the first fetch.
   await loadMutedSources();
+  // Load Live Listen voice prefs (premium cloud voice on/off + which voice).
+  await TtsService.instance.loadAudioPrefs();
   // Request high refresh rate (90/120Hz) on supported devices. Safe no-op
   // on phones that only support 60Hz. Wrap in try/catch because the
   // plugin throws on iOS / older Android.
@@ -222,35 +235,10 @@ class _MainShellState extends State<MainShell> {
             right: 0,
             bottom: 84,
             child: ValueListenableBuilder<bool>(
-              valueListenable: TtsService.instance.isPlaying,
-              builder: (context, _, __) {
-                if (TtsService.instance.sentences.isEmpty) {
-                  return const SizedBox.shrink();
-                }
-                return TtsPlayerBar(
-                  onToggle: () async {
-                    if (TtsService.instance.isPlaying.value) {
-                      await TtsService.instance.pause();
-                    } else {
-                      await TtsService.instance.resume();
-                    }
-                  },
-                  onClose: () => TtsService.instance.stop(),
-                  onSearchHeard: () {
-                    final heard = TtsService.instance.currentSentenceText();
-                    if (heard.trim().isEmpty) return;
-                    TtsService.instance.pause();
-                    final ctx = rootNavigatorKey.currentContext;
-                    if (ctx != null) {
-                      Navigator.push(
-                        ctx,
-                        MaterialPageRoute(
-                          builder: (_) => SearchScreen(initialQuery: heard),
-                        ),
-                      );
-                    }
-                  },
-                );
+              valueListenable: TtsService.instance.hasSession,
+              builder: (context, active, __) {
+                if (!active) return const SizedBox.shrink();
+                return const GlintMiniPlayer();
               },
             ),
           ),

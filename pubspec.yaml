@@ -3,7 +3,7 @@ description: Know the undiscovered you
 publish_to: 'none' # This is the app, not a pub.dev package. Leave as-is.
 # version: x.y.z+code — bump +code (versionCode) for every Play Store
 # upload; bump x.y.z (versionName) for user-visible releases.
-version: 1.0.3+9
+version: 1.0.3+11
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -45,6 +45,11 @@ dependencies:
   permission_handler: ^11.3.1
   # Stage W: text-to-speech for Live Listen. Required by lib/services/tts_service.dart.
   flutter_tts: ^4.2.0
+  # Audio Engine: premium cloud voice (Groq TTS via the worker) played as
+  # audio + lock-screen / background controls. Device flutter_tts is the
+  # offline fallback.
+  just_audio: ^0.9.42
+  just_audio_background: ^0.0.1-beta.13
   # Stage AA: share-as-image (quote card → PNG → share sheet).
   path_provider: ^2.1.4
   # iOS launch: Sign in with Apple (required by App Store when offering
@@ -63,6 +68,9 @@ flutter:
   uses-material-design: true
   assets:
     - images/a.png
+    # News-channel background music bed. Drop a royalty-free loop here named
+    # news_bed.mp3 (low, instrumental). Optional — Live Listen works without it.
+    - assets/audio/
 
 flutter_launcher_icons:
   android: "launcher_icon"

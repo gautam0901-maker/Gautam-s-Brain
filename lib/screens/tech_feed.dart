@@ -1019,13 +1019,15 @@ Future<String> buildArticleListenScript(Map<String, String> item) async {
   final title = item['title'] ?? '';
   final body = item['summary'] ?? '';
   final prompt = "$kGlintPersona\n\n"
-      "Turn this article into a natural, lively spoken-word audio summary a "
-      "listener can comfortably follow. STRICT rules: plain spoken sentences "
-      "only — NO markdown, NO URLs, NO symbols (no slashes, asterisks, hashes), "
-      "no headings, no bullet points, no lists. Begin by naming the story, then "
-      "explain what happened and why it matters, in about 120-160 words. Warm, "
-      "engaging radio-host tone.\n\n"
-      "Title: $title\n\nContent: ${body.length > 1500 ? body.substring(0, 1500) : body}";
+      "You are a professional TV/radio NEWS ANCHOR delivering ONE segment of a "
+      "live broadcast. Do NOT greet the audience, do NOT say 'welcome' or "
+      "'hello' or 'that's all' (the intro and sign-off are handled separately). "
+      "Open the segment by stating the headline like an anchor would, then "
+      "report what happened and why it matters in a crisp, authoritative yet "
+      "warm broadcast voice — about 110-150 words. STRICT rules: plain spoken "
+      "sentences only — NO markdown, NO URLs, NO symbols (no slashes, asterisks, "
+      "hashes), no headings, no bullet points, no lists.\n\n"
+      "Headline: $title\n\nDetails: ${body.length > 1500 ? body.substring(0, 1500) : body}";
   final ai = await AIService.instance.generate(
     prompt: prompt,
     pollinationsFallback: PollinationsAI.generate,
@@ -1161,8 +1163,24 @@ Future<void> startLiveListen(BuildContext context, Map<String, String> item) asy
     content: Text('🎧 Glint AI is preparing your audio…'),
     duration: Duration(seconds: 2),
   ));
-  final script = await buildArticleListenScript(item);
-  await TtsService.instance.start(script);
+  // Single-article listen runs through the queue too, so it gets the
+  // Spotify-style player, the outro, and auto-dismiss.
+  TtsService.instance.scriptBuilder = buildArticleListenScript;
+  await TtsService.instance.playQueue([item]);
+}
+
+/// Listen to a whole list of stories as a playlist (Discover deck, Vault,
+/// a topic). Each story is its own track with next/prev + auto-advance.
+Future<void> startLiveListenQueue(
+    BuildContext context, List<Map<String, String>> items,
+    {int startIndex = 0}) async {
+  if (items.isEmpty) return;
+  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+    content: Text('🎧 Building your Glint listen queue…'),
+    duration: Duration(seconds: 2),
+  ));
+  TtsService.instance.scriptBuilder = buildArticleListenScript;
+  await TtsService.instance.playQueue(items, startIndex: startIndex);
 }
 
 /// Human label for a long-press action result (toast text).
@@ -1180,6 +1198,8 @@ String cardActionLabel(String r) {
       return 'Added to Read Later';
     case 'already_queued':
       return 'Already in Read Later';
+    case 'queued_listen':
+      return '🎧 Added to listen queue';
     default:
       return 'Done';
   }
@@ -1302,6 +1322,13 @@ Future<String?> showCardActionSheet(
             action(Icons.headset_mic, 'Live Listen', 'Hear a Glint AI summary',
                 glintAccent(sheetCtx), () {
               Navigator.pop(sheetCtx, 'listen');
+            }),
+            action(Icons.queue_music, 'Add to listen queue',
+                'Plays after the current story', glintAccent(sheetCtx),
+                () async {
+              TtsService.instance.scriptBuilder = buildArticleListenScript;
+              await TtsService.instance.addToQueue(item);
+              if (sheetCtx.mounted) Navigator.pop(sheetCtx, 'queued_listen');
             }),
             action(Icons.bookmark_add_outlined, 'Save to Vault', '',
                 glintAccent(sheetCtx), () async {
@@ -1518,10 +1545,9 @@ class _TechFeedScreenState extends State<TechFeedScreen> {
         duration: Duration(seconds: 2),
       ));
     }
-    final script = await buildDeckListenScript(papers);
-    if (!mounted) return;
-    await TtsService.instance.start(script);
-    setState(() => _preparingDeckAudio = false);
+    // Spotify-style queue — each story in the deck is its own track.
+    await startLiveListenQueue(context, papers.take(15).toList());
+    if (mounted) setState(() => _preparingDeckAudio = false);
   }
 
   @override
@@ -3052,10 +3078,9 @@ class _VaultScreenState extends State<VaultScreen> {
         duration: Duration(seconds: 2),
       ));
     }
-    final script = await buildDeckListenScript(displayedPapers, limit: 10);
-    if (!mounted) return;
-    await TtsService.instance.start(script);
-    setState(() => _preparingPlaylist = false);
+    // Each saved story becomes a track in a Spotify-style queue.
+    await startLiveListenQueue(context, displayedPapers.take(12).toList());
+    if (mounted) setState(() => _preparingPlaylist = false);
   }
 
   Future<void> loadVault() async {
@@ -3352,6 +3377,9 @@ class _DetailScreenState extends State<DetailScreen> {
   List<Map<String, String>> chatHistory = [];
   bool isTyping = false;
   late List<Map<String, String>> _conversation;
+  
+  // Chat TTS state
+  int? _playingChatIndex; // which chat message index is currently playing
 
   /// Reading progress 0..1, derived from scroll position.
   double _readingProgress = 0.0;
@@ -3553,6 +3581,29 @@ class _DetailScreenState extends State<DetailScreen> {
     }
   }
 
+  /// Play the TTS audio for a specific chat message (AI responses only).
+  Future<void> _playChat(int messageIndex) async {
+    final msg = chatHistory[messageIndex];
+    if (msg['role'] != 'ai') return; // Only play AI responses
+    
+    final text = msg['text'] ?? '';
+    if (text.isEmpty || text.startsWith('⚠️')) return;
+    
+    // Stop any currently playing chat audio
+    if (_playingChatIndex != null && _playingChatIndex != messageIndex) {
+      await TtsService.instance.stopChatAudio();
+    }
+    
+    setState(() => _playingChatIndex = messageIndex);
+    await TtsService.instance.playChatResponse(text);
+  }
+
+  /// Stop playing chat audio.
+  Future<void> _stopChatAudio() async {
+    await TtsService.instance.stopChatAudio();
+    if (mounted) setState(() => _playingChatIndex = null);
+  }
+
   Future<void> _launchURL() async {
     final Uri url = Uri.parse(widget.paper['url']!);
     if (!await launchUrl(url, mode: LaunchMode.externalApplication)) { print('Could not launch $url'); }
@@ -3587,10 +3638,9 @@ class _DetailScreenState extends State<DetailScreen> {
     if (_articleBody != null && _articleBody!.length > 200) {
       item['summary'] = _articleBody!;
     }
-    final script = await buildArticleListenScript(item);
-    if (!mounted) return;
-    await TtsService.instance.start(script);
-    setState(() => _preparingAudio = false);
+    // Runs through the queue so it gets the full-screen player + outro.
+    await startLiveListenQueue(context, [item]);
+    if (mounted) setState(() => _preparingAudio = false);
   }
 
   void _onScroll() {
@@ -3648,9 +3698,13 @@ class _DetailScreenState extends State<DetailScreen> {
   @override
   void dispose() {
     _saveScrollPosition();
-    // NOTE: we deliberately do NOT stop TTS here — Live Listen keeps
-    // playing as you leave the article and browse other tabs (the global
-    // player bar in MainShell takes over the controls). Stop it from the
+    // Stop chat TTS when leaving the detail screen
+    if (_playingChatIndex != null) {
+      unawaited(TtsService.instance.stopChatAudio());
+    }
+    // NOTE: we deliberately do NOT stop Live Listen (article TTS) here — 
+    // Live Listen keeps playing as you leave the article and browse other tabs 
+    // (the global player bar in MainShell takes over the controls). Stop it from the
     // player bar's close button.
     _scrollCtl.removeListener(_onScroll);
     _scrollCtl.dispose();
@@ -3837,41 +3891,19 @@ class _DetailScreenState extends State<DetailScreen> {
             ),
           ),
         ),
-        // 🎧 TTS player bar — slides up from the bottom while listening.
+        // 🎧 Mini player — tap to open the full Live Listen screen.
         Positioned(
           left: 0, right: 0, bottom: 0,
           child: ValueListenableBuilder<bool>(
-            valueListenable: TtsService.instance.isPlaying,
-            builder: (context, playing, _) {
-              final hasQueue = TtsService.instance.sentences.isNotEmpty;
-              if (!hasQueue) return const SizedBox.shrink();
-              return TtsPlayerBar(
-                onSearchHeard: _searchCurrentlyHeard,
-                onClose: () async {
-                  await TtsService.instance.stop();
-                  setState(() {});
-                },
-                onToggle: _toggleListen,
-              );
+            valueListenable: TtsService.instance.hasSession,
+            builder: (context, active, _) {
+              if (!active) return const SizedBox.shrink();
+              return const GlintMiniPlayer();
             },
           ),
         ),
         ]),
       ),
-    );
-  }
-
-  /// "I just heard something interesting — find the full story." Takes the
-  /// currently-spoken sentence and opens global search pre-filled with it.
-  Future<void> _searchCurrentlyHeard() async {
-    final heard = TtsService.instance.currentSentenceText();
-    if (heard.trim().isEmpty) return;
-    // Pause so the user can read results in silence.
-    await TtsService.instance.pause();
-    if (!mounted) return;
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (_) => SearchScreen(initialQuery: heard)),
     );
   }
 
@@ -4000,6 +4032,9 @@ class _DetailScreenState extends State<DetailScreen> {
                 itemBuilder: (context, index) {
                   final msg = chatHistory[index];
                   final isUser = msg['role'] == 'user';
+                  final isPlayingThisMessage = _playingChatIndex == index;
+                  final messageText = msg['text'] ?? '';
+                  
                   return Container(
                     margin: const EdgeInsets.only(bottom: 12),
                     padding: const EdgeInsets.all(12),
@@ -4014,12 +4049,59 @@ class _DetailScreenState extends State<DetailScreen> {
                             : glintMuted(context, 0.10),
                       ),
                     ),
-                    child: Text(
-                      "${isUser ? '👤 You: ' : '🤖 Assistant: '}${msg['text']}",
-                      style: TextStyle(
-                          color: isUser ? glintAccent(context) : glintText(context),
-                          fontSize: 15,
-                          height: 1.4),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // Avatar / label
+                            Expanded(
+                              child: Text(
+                                "${isUser ? '👤 You: ' : '🤖 Assistant: '}",
+                                style: TextStyle(
+                                  color: isUser
+                                      ? glintAccent(context)
+                                      : glintWarmAccent(context),
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                            // TTS button for AI responses
+                            if (!isUser && !messageText.startsWith('⚠️'))
+                              ValueListenableBuilder<bool>(
+                                valueListenable: TtsService.instance.isPlaying,
+                                builder: (_, playing, __) {
+                                  final isCurrentlyPlaying = playing && isPlayingThisMessage;
+                                  return SpringScale(
+                                    onTap: isCurrentlyPlaying
+                                        ? _stopChatAudio
+                                        : () => _playChat(index),
+                                    child: Icon(
+                                      isCurrentlyPlaying
+                                          ? Icons.pause_circle_filled
+                                          : Icons.play_circle_outline,
+                                      color: isCurrentlyPlaying
+                                          ? glintWarmAccent(context)
+                                          : glintAccent(context).withOpacity(0.6),
+                                      size: 20,
+                                    ),
+                                  );
+                                },
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          messageText,
+                          style: TextStyle(
+                            color: isUser ? glintAccent(context) : glintText(context),
+                            fontSize: 15,
+                            height: 1.4,
+                          ),
+                        ),
+                      ],
                     ),
                   );
                 },
@@ -4179,12 +4261,17 @@ class _CardThumbnailState extends State<CardThumbnail> {
   void _resolveFor(CardThumbnail w) {
     if (w.imageUrl.isNotEmpty) {
       setState(() => _currentUrl = w.imageUrl);
-    } else if (w.articleUrl.isNotEmpty) {
+    } else if (w.articleUrl.isNotEmpty && !_isGoogleNews(w.articleUrl)) {
       _kickOgScrape();
     } else {
+      // Google News redirect URLs only ever yield Google's grey logo when
+      // scraped — so skip straight to a varied (title-seeded) photo instead
+      // of every card showing the same logo.
       _useFinalFallback();
     }
   }
+
+  bool _isGoogleNews(String url) => url.contains('news.google.com');
 
   Future<void> _kickOgScrape() async {
     _ogTried = true;
@@ -4270,7 +4357,10 @@ class _CoverImageState extends State<_CoverImage> {
     _resolved = widget.imageUrl;
     // Many news/RSS items have no image field. Scrape the publisher's
     // og:image so the detail screen shows a real cover, like the cards do.
-    if (_resolved.isEmpty && widget.articleUrl.isNotEmpty) {
+    // Skip Google News URLs (they only scrape to Google's grey logo).
+    if (_resolved.isEmpty &&
+        widget.articleUrl.isNotEmpty &&
+        !widget.articleUrl.contains('news.google.com')) {
       OgImageService.fetchMeta(widget.articleUrl).then((meta) {
         if (!mounted) return;
         final og = meta.image ?? '';
@@ -4834,6 +4924,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                     const Divider(height: 1, color: Colors.white12, indent: 56),
                     _settingsTile(
+                      icon: Icons.record_voice_over_outlined,
+                      title: 'Live Listen Voice',
+                      subtitle: 'Premium AI voice + pick who reads to you',
+                      onTap: _pickListenVoice,
+                    ),
+                    const Divider(height: 1, color: Colors.white12, indent: 56),
+                    _settingsTile(
                       icon: Icons.palette_outlined,
                       title: 'Appearance',
                       subtitle: _themeSubtitle(themeModeNotifier.value),
@@ -5178,6 +5275,92 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   /// Enable daily notifications + immediately fire a test one so the user
   /// can confirm delivery without waiting for the 8am/1pm/6pm slots.
+  /// Live Listen voice picker — premium on/off + which premium voice.
+  Future<void> _pickListenVoice() async {
+    final tts = TtsService.instance;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    await showModalBottomSheet(
+      context: context,
+      backgroundColor: isDark ? const Color(0xFF0C1622) : Colors.white,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(22))),
+      builder: (sheetCtx) {
+        return StatefulBuilder(
+          builder: (sheetCtx, setSheet) {
+            return SafeArea(
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+                      child: Text('Live Listen Voice',
+                          style: TextStyle(
+                              color: glintText(sheetCtx),
+                              fontSize: 17,
+                              fontWeight: FontWeight.w800)),
+                    ),
+                    SwitchListTile(
+                      value: tts.cloudEnabled,
+                      activeColor: glintAccent(sheetCtx),
+                      title: Text('Premium AI voice',
+                          style: TextStyle(
+                              color: glintText(sheetCtx),
+                              fontWeight: FontWeight.w600)),
+                      subtitle: Text(
+                          'Lively studio-quality narration. Off = your phone\'s built-in voice.',
+                          style: TextStyle(
+                              color: glintText(sheetCtx, 0.5), fontSize: 12)),
+                      onChanged: (v) async {
+                        await tts.setCloudEnabled(v);
+                        setSheet(() {});
+                      },
+                    ),
+                    if (tts.cloudEnabled) ...[
+                      const Divider(height: 16),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 0, 20, 6),
+                        child: Text('WHO READS TO YOU',
+                            style: TextStyle(
+                                color: glintAccent(sheetCtx),
+                                fontSize: 11,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: 1)),
+                      ),
+                      ...TtsService.kCloudVoices.entries.map((e) => RadioListTile<
+                          String>(
+                        value: e.value,
+                        groupValue: tts.cloudVoice,
+                        activeColor: glintAccent(sheetCtx),
+                        dense: true,
+                        title: Text(e.key,
+                            style: TextStyle(
+                                color: glintText(sheetCtx), fontSize: 14)),
+                        onChanged: (v) async {
+                          if (v != null) await tts.setCloudVoice(v);
+                          setSheet(() {});
+                        },
+                      )),
+                    ],
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 6, 20, 18),
+                      child: Text(
+                          'Premium voice is free (Groq) and streams through Glint\'s server. '
+                          'If it\'s ever busy, Glint automatically uses your phone\'s voice so audio never stops.',
+                          style: TextStyle(
+                              color: glintText(sheetCtx, 0.45), fontSize: 11)),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   Future<void> _setupNotifications() async {
     final subs = await loadSubscriptions();
     final ok = await NotificationService.instance
@@ -5739,6 +5922,595 @@ class TtsPlayerBar extends StatelessWidget {
       ),
     );
   }
+}
+
+// ============================================================
+// GLINT MINI PLAYER — compact Spotify-style bar (thumbnail + title +
+// live line + play/next). Tap it to open the full LiveListenScreen.
+// Visible whenever a listen session is active (hasSession).
+// ============================================================
+const List<Color> kListenArtGradient = [Color(0xFF0C2A2E), Color(0xFF12403E)];
+
+class GlintMiniPlayer extends StatelessWidget {
+  const GlintMiniPlayer({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final tts = TtsService.instance;
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+        child: ValueListenableBuilder<Map<String, String>?>(
+          valueListenable: tts.currentTrack,
+          builder: (context, track, _) {
+            if (track == null) return const SizedBox.shrink();
+            return SpringScale(
+              onTap: () {
+                Navigator.of(context).push(PageRouteBuilder(
+                  opaque: false,
+                  transitionDuration: const Duration(milliseconds: 320),
+                  pageBuilder: (_, a, __) => FadeTransition(
+                    opacity: a,
+                    child: SlideTransition(
+                      position: Tween(
+                              begin: const Offset(0, 0.12), end: Offset.zero)
+                          .animate(CurvedAnimation(
+                              parent: a, curve: Curves.easeOutCubic)),
+                      child: const LiveListenScreen(),
+                    ),
+                  ),
+                ));
+              },
+              child: GlassPanel(
+                borderRadius: 18,
+                blurSigma: 22,
+                tint: glintAccent(context),
+                tintOpacity: 0.14,
+                borderColor: glintAccent(context).withOpacity(0.4),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                child: Row(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: SizedBox(
+                        width: 44,
+                        height: 44,
+                        child: CardThumbnail(
+                          key: ValueKey('mini-${track['url']}'),
+                          imageUrl: track['image'] ?? '',
+                          articleUrl: track['url'] ?? '',
+                          fallbackPrompt: track['title'] ?? 'news',
+                          source: track['source'] ?? '',
+                          gradient: kListenArtGradient,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(track['title'] ?? 'Listening…',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  color: glintText(context),
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700)),
+                          const SizedBox(height: 2),
+                          Row(children: [
+                            Icon(Icons.graphic_eq,
+                                size: 12, color: glintAccent(context)),
+                            const SizedBox(width: 4),
+                            Expanded(
+                              child: Text(track['source'] ?? 'Glint AI',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                      color: glintText(context, 0.6),
+                                      fontSize: 11)),
+                            ),
+                          ]),
+                        ],
+                      ),
+                    ),
+                    ValueListenableBuilder<bool>(
+                      valueListenable: tts.isPlaying,
+                      builder: (context, playing, _) => SpringScale(
+                        onTap: () => playing ? tts.pause() : tts.resume(),
+                        child: Icon(
+                            playing
+                                ? Icons.pause_circle_filled
+                                : Icons.play_circle_fill,
+                            size: 34,
+                            color: glintAccent(context)),
+                      ),
+                    ),
+                    SpringScale(
+                      onTap: () => tts.nextTrack(),
+                      child: Padding(
+                        padding: const EdgeInsets.only(left: 4),
+                        child: Icon(Icons.skip_next,
+                            size: 26, color: glintText(context, 0.8)),
+                      ),
+                    ),
+                    SpringScale(
+                      onTap: () => tts.endSession(),
+                      child: Padding(
+                        padding: const EdgeInsets.only(left: 4, right: 2),
+                        child: Icon(Icons.close,
+                            size: 20, color: glintText(context, 0.55)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================
+// LIVE LISTEN SCREEN — full-page Spotify-style player. Big art,
+// live subtitle, transport, speed, queue list. Theme-matched aurora
+// background with fade/pulse animation.
+// ============================================================
+class LiveListenScreen extends StatefulWidget {
+  const LiveListenScreen({super.key});
+  @override
+  State<LiveListenScreen> createState() => _LiveListenScreenState();
+}
+
+class _LiveListenScreenState extends State<LiveListenScreen>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _pulse;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulse = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 2600))
+      ..repeat(reverse: true);
+    // Auto-close the full screen when the session ends naturally (outro done).
+    TtsService.instance.hasSession.addListener(_onSession);
+  }
+
+  void _onSession() {
+    if (!TtsService.instance.hasSession.value && mounted) {
+      Navigator.of(context).maybePop();
+    }
+  }
+
+  @override
+  void dispose() {
+    TtsService.instance.hasSession.removeListener(_onSession);
+    _pulse.dispose();
+    super.dispose();
+  }
+
+  void _findThis() {
+    final heard = TtsService.instance.currentSentenceText();
+    if (heard.trim().isEmpty) return;
+    TtsService.instance.pause();
+    Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => SearchScreen(initialQuery: heard)));
+  }
+
+  void _openArticle(Map<String, String> t) {
+    Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) =>
+            DetailScreen(paper: t, backgroundColors: kListenArtGradient)));
+  }
+
+  String _fmtDur(Duration d) {
+    final m = d.inMinutes.remainder(60).toString();
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tts = TtsService.instance;
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      body: AnimatedAuroraBackground(
+        child: SafeArea(
+          child: ValueListenableBuilder<Map<String, String>?>(
+            valueListenable: tts.currentTrack,
+            builder: (context, track, _) {
+              if (track == null) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              return Column(
+                children: [
+                  // ── Top bar ──
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(8, 6, 8, 0),
+                    child: Row(
+                      children: [
+                        IconButton(
+                          icon: Icon(Icons.keyboard_arrow_down,
+                              color: glintText(context), size: 30),
+                          onPressed: () => Navigator.of(context).maybePop(),
+                        ),
+                        Expanded(
+                          child: Column(
+                            children: [
+                              Text('NOW LISTENING',
+                                  style: TextStyle(
+                                      color: glintText(context, 0.55),
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w800,
+                                      letterSpacing: 2)),
+                              ValueListenableBuilder<int>(
+                                valueListenable: tts.trackIndex,
+                                builder: (context, i, _) =>
+                                    ValueListenableBuilder<
+                                        List<Map<String, String>>>(
+                                  valueListenable: tts.queue,
+                                  builder: (context, q, _) => Text(
+                                      'Glint AI · ${i + 1} of ${q.length}',
+                                      style: TextStyle(
+                                          color: glintAccent(context),
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w600)),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          icon: Icon(Icons.close,
+                              color: glintText(context, 0.7), size: 22),
+                          onPressed: () => tts.endSession()
+                              .then((_) => Navigator.of(context).maybePop()),
+                        ),
+                      ],
+                    ),
+                  ),
+                  // ── Big art (gentle pulse while playing) ──
+                  Expanded(
+                    flex: 5,
+                    child: Center(
+                      child: ScaleTransition(
+                        scale: Tween(begin: 0.98, end: 1.02).animate(
+                            CurvedAnimation(
+                                parent: _pulse, curve: Curves.easeInOut)),
+                        child: Container(
+                          margin: const EdgeInsets.symmetric(horizontal: 36),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(24),
+                            boxShadow: [
+                              BoxShadow(
+                                  color:
+                                      glintAccent(context).withOpacity(0.35),
+                                  blurRadius: 50,
+                                  spreadRadius: 4),
+                            ],
+                          ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(24),
+                            child: AspectRatio(
+                              aspectRatio: 1,
+                              child: CardThumbnail(
+                                key: ValueKey('art-${track['url']}'),
+                                imageUrl: track['image'] ?? '',
+                                articleUrl: track['url'] ?? '',
+                                fallbackPrompt: track['title'] ?? 'news',
+                                source: track['source'] ?? '',
+                                gradient: kListenArtGradient,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  // ── Title + source ──
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(28, 14, 28, 0),
+                    child: Column(
+                      children: [
+                        Text(track['title'] ?? '',
+                            textAlign: TextAlign.center,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                color: glintText(context),
+                                fontSize: 20,
+                                height: 1.25,
+                                fontWeight: FontWeight.w800)),
+                        const SizedBox(height: 6),
+                        Text(track['source'] ?? 'Glint AI',
+                            style: TextStyle(
+                                color: glintText(context, 0.6), fontSize: 13)),
+                      ],
+                    ),
+                  ),
+                  // ── Live subtitle (fades between sentences) ──
+                  Expanded(
+                    flex: 2,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 28),
+                      child: Center(
+                        child: ValueListenableBuilder<int>(
+                          valueListenable: tts.currentSentence,
+                          builder: (context, idx, _) {
+                            final s = tts.currentSentenceText();
+                            return AnimatedSwitcher(
+                              duration: const Duration(milliseconds: 350),
+                              child: Text(
+                                s.isEmpty ? '…' : s,
+                                key: ValueKey(idx),
+                                textAlign: TextAlign.center,
+                                maxLines: 4,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                    color: glintAccent(context),
+                                    fontSize: 15,
+                                    height: 1.4,
+                                    fontWeight: FontWeight.w500),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ),
+                  // ── Progress scrubber (premium cloud audio) + buffering ──
+                  ValueListenableBuilder<bool>(
+                    valueListenable: tts.buffering,
+                    builder: (context, buffering, _) {
+                      if (buffering) {
+                        return Padding(
+                          padding: const EdgeInsets.fromLTRB(28, 4, 28, 4),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: glintAccent(context))),
+                              const SizedBox(width: 8),
+                              Text('Preparing premium voice…',
+                                  style: TextStyle(
+                                      color: glintText(context, 0.55),
+                                      fontSize: 12)),
+                            ],
+                          ),
+                        );
+                      }
+                      return ValueListenableBuilder<Duration>(
+                        valueListenable: tts.duration,
+                        builder: (context, dur, _) => ValueListenableBuilder<
+                            Duration>(
+                          valueListenable: tts.position,
+                          builder: (context, pos, _) {
+                            final total = dur.inMilliseconds;
+                            final frac = total > 0
+                                ? (pos.inMilliseconds / total).clamp(0.0, 1.0)
+                                : 0.0;
+                            // Only show a real scrubber for cloud audio (device
+                            // TTS has no seekable duration).
+                            if (!tts.isCloud || total <= 0) {
+                              return const SizedBox(height: 8);
+                            }
+                            return Padding(
+                              padding: const EdgeInsets.fromLTRB(28, 2, 28, 0),
+                              child: Column(
+                                children: [
+                                  SliderTheme(
+                                    data: SliderThemeData(
+                                      trackHeight: 3,
+                                      thumbShape: const RoundSliderThumbShape(
+                                          enabledThumbRadius: 6),
+                                      overlayShape: const RoundSliderOverlayShape(
+                                          overlayRadius: 12),
+                                      activeTrackColor: glintAccent(context),
+                                      inactiveTrackColor:
+                                          glintMuted(context, 0.18),
+                                      thumbColor: glintAccent(context),
+                                    ),
+                                    child: Slider(
+                                      value: frac,
+                                      onChanged: (v) => tts.seek(Duration(
+                                          milliseconds: (v * total).round())),
+                                    ),
+                                  ),
+                                  Row(
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Text(_fmtDur(pos),
+                                          style: TextStyle(
+                                              color: glintText(context, 0.5),
+                                              fontSize: 11)),
+                                      Text(_fmtDur(dur),
+                                          style: TextStyle(
+                                              color: glintText(context, 0.5),
+                                              fontSize: 11)),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                      );
+                    },
+                  ),
+                  // ── Transport ──
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        SpringScale(
+                          onTap: () => tts.prevTrack(),
+                          child: Icon(Icons.skip_previous,
+                              size: 40, color: glintText(context, 0.85)),
+                        ),
+                        const SizedBox(width: 26),
+                        ValueListenableBuilder<bool>(
+                          valueListenable: tts.isPlaying,
+                          builder: (context, playing, _) => SpringScale(
+                            onTap: () =>
+                                playing ? tts.pause() : tts.resume(),
+                            child: Container(
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: glintAccent(context),
+                                boxShadow: [
+                                  BoxShadow(
+                                      color: glintAccent(context)
+                                          .withOpacity(0.5),
+                                      blurRadius: 24)
+                                ],
+                              ),
+                              padding: const EdgeInsets.all(14),
+                              child: Icon(
+                                  playing ? Icons.pause : Icons.play_arrow,
+                                  size: 38,
+                                  color: Colors.white),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 26),
+                        SpringScale(
+                          onTap: () => tts.nextTrack(),
+                          child: Icon(Icons.skip_next,
+                              size: 40, color: glintText(context, 0.85)),
+                        ),
+                      ],
+                    ),
+                  ),
+                  // ── Secondary actions ──
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        ValueListenableBuilder<double>(
+                          valueListenable: tts.speed,
+                          builder: (context, sp, _) => _pillBtn(
+                            context,
+                            '${sp == sp.roundToDouble() ? sp.toInt() : sp}×',
+                            Icons.speed,
+                            () => tts.cycleSpeed(),
+                          ),
+                        ),
+                        _pillBtn(context, 'Find this', Icons.search, _findThis),
+                        _pillBtn(context, 'Read', Icons.article_outlined,
+                            () => _openArticle(track)),
+                      ],
+                    ),
+                  ),
+                  // ── Queue list ──
+                  Expanded(
+                    flex: 4,
+                    child: ValueListenableBuilder<List<Map<String, String>>>(
+                      valueListenable: tts.queue,
+                      builder: (context, q, _) =>
+                          ValueListenableBuilder<int>(
+                        valueListenable: tts.trackIndex,
+                        builder: (context, cur, _) {
+                          if (q.length <= 1) return const SizedBox.shrink();
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Padding(
+                                padding:
+                                    const EdgeInsets.fromLTRB(24, 6, 24, 6),
+                                child: Text('UP NEXT',
+                                    style: TextStyle(
+                                        color: glintText(context, 0.5),
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w800,
+                                        letterSpacing: 1.5)),
+                              ),
+                              Expanded(
+                                child: ListView.builder(
+                                  padding: const EdgeInsets.only(bottom: 16),
+                                  itemCount: q.length,
+                                  itemBuilder: (context, i) {
+                                    final t = q[i];
+                                    final active = i == cur;
+                                    return ListTile(
+                                      dense: true,
+                                      onTap: () => tts.playTrackAt(i),
+                                      leading: Icon(
+                                          active
+                                              ? Icons.graphic_eq
+                                              : Icons.music_note,
+                                          size: 18,
+                                          color: active
+                                              ? glintAccent(context)
+                                              : glintText(context, 0.4)),
+                                      title: Text(t['title'] ?? '',
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                              color: active
+                                                  ? glintAccent(context)
+                                                  : glintText(context, 0.85),
+                                              fontSize: 13,
+                                              fontWeight: active
+                                                  ? FontWeight.w700
+                                                  : FontWeight.w500)),
+                                      subtitle: Text(t['source'] ?? '',
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                              color: glintText(context, 0.45),
+                                              fontSize: 11)),
+                                    );
+                                  },
+                                ),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _pillBtn(BuildContext context, String label, IconData icon,
+          VoidCallback onTap) =>
+      SpringScale(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+          decoration: BoxDecoration(
+            color: glintMuted(context, 0.12),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: glintAccent(context).withOpacity(0.3)),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(icon, size: 15, color: glintAccent(context)),
+            const SizedBox(width: 6),
+            Text(label,
+                style: TextStyle(
+                    color: glintText(context, 0.85),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700)),
+          ]),
+        ),
+      );
 }
 
 // ============================================================
