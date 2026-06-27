@@ -62,86 +62,77 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       return;
     }
     setState(() => _saving = true);
-    try {
-      final profile = UserProfile(
-        professionId: _professionId,
-        domains: _domains.toList(),
-        countryCode: _countryCode,
-        interests: _interests.text.trim(),
-        depth: _depth,
-      );
-      await UserProfileService.instance.save(profile);
+    final profile = UserProfile(
+      professionId: _professionId,
+      domains: _domains.toList(),
+      countryCode: _countryCode,
+      interests: _interests.text.trim(),
+      depth: _depth,
+    );
 
-      // Auto-pin selected domains as topic subscriptions. We add only the
-      // missing ones so the user's manual edits aren't clobbered.
-      final existing = (await loadSubscriptions()).map((s) => s.toLowerCase()).toSet();
-      for (final d in _domains) {
-        if (!existing.contains(d.toLowerCase())) {
-          await addSubscription(d);
-        }
+    // Mark complete LOCALLY first so the user always gets into the app, even
+    // if the Firestore write is denied (rules not published) or offline.
+    await UserProfileService.instance.markOnboardedLocally(profile);
+
+    // Auto-pin selected domains as topic subscriptions (missing ones only).
+    final existing = (await loadSubscriptions()).map((s) => s.toLowerCase()).toSet();
+    for (final d in _domains) {
+      if (!existing.contains(d.toLowerCase())) {
+        await addSubscription(d);
       }
-      // Let Glint AI read the free-text answer and pin a few real topics
-      // from it (e.g. "I love F1 and cooking" → "Formula 1", "Cooking").
-      final free = _interests.text.trim();
-      if (free.length > 4) {
-        try {
-          final extracted = await AIService.instance.generate(
-            prompt:
-                "From this sentence, extract up to 4 concrete news/interest topics "
-                "(1-3 words each), comma-separated, Title Case, no extra words:\n\"$free\"",
-            pollinationsFallback: PollinationsAI.generate,
-            maxTokens: 60,
-          );
-          if (extracted != null) {
-            for (final t in extracted.split(RegExp(r'[,\n]'))) {
-              final topic = t.trim().replaceAll(RegExp(r'[."’]'), '');
-              if (topic.length >= 3 && topic.length <= 30) {
-                await addSubscription(topic);
-              }
+    }
+    // Let Glint AI read the free-text answer and pin a few real topics.
+    final free = _interests.text.trim();
+    if (free.length > 4) {
+      try {
+        final extracted = await AIService.instance.generate(
+          prompt:
+              "From this sentence, extract up to 4 concrete news/interest topics "
+              "(1-3 words each), comma-separated, Title Case, no extra words:\n\"$free\"",
+          pollinationsFallback: PollinationsAI.generate,
+          maxTokens: 60,
+        );
+        if (extracted != null) {
+          for (final t in extracted.split(RegExp(r'[,\n]'))) {
+            final topic = t.trim().replaceAll(RegExp(r'[."’]'), '');
+            if (topic.length >= 3 && topic.length <= 30) {
+              await addSubscription(topic);
             }
           }
-        } catch (_) {}
-      }
-      notifySubsChanged();
+        }
+      } catch (_) {}
+    }
+    notifySubsChanged();
 
-      if (!mounted) return;
-      if (widget.isEdit) {
-        Navigator.of(context).pop();
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Profile updated'), backgroundColor: Colors.green),
-        );
-      }
-      // When isEdit is false, the OnboardingGate in MainShell auto-closes
-      // because the profile stream emits non-null.
+    // Best-effort cloud save — does NOT block navigation. If it fails we
+    // already proceeded locally; a quiet note tells the user sync is off.
+    String? cloudWarning;
+    try {
+      await UserProfileService.instance.save(profile);
     } on FirebaseException catch (e) {
-      if (!mounted) return;
-      // Show the actual reason — code + message — and offer a fix when we
-      // can identify a common one. No more generic "Save failed".
-      final code = e.code;
-      final hint = code == 'permission-denied'
-          ? 'Open Firestore Rules in the Firebase console and confirm the '
-              "users/{uid} match block exists, then try again."
-          : code == 'unavailable'
-              ? 'No network. Check your connection.'
-              : code == 'not-signed-in'
-                  ? 'Sign out and sign in again from Settings.'
-                  : 'Code: $code';
+      cloudWarning = e.code == 'permission-denied'
+          ? 'Saved on this device. Cloud sync is off until the Firestore rules are published.'
+          : 'Saved on this device. Cloud sync failed (${e.code}).';
+    } catch (_) {
+      cloudWarning = 'Saved on this device. Cloud sync failed.';
+    }
+
+    if (!mounted) return;
+    setState(() => _saving = false);
+
+    if (widget.isEdit) {
+      Navigator.of(context).pop();
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('${e.message ?? code}\n$hint'),
-          backgroundColor: Colors.redAccent,
-          duration: const Duration(seconds: 6),
-        ),
+        const SnackBar(content: Text('Profile updated'), backgroundColor: Colors.green),
       );
-    } catch (e) {
-      if (!mounted) return;
+    } else {
+      // First onboarding → leave the screen via the gate ticker.
+      profileGateTicker.value++;
+    }
+    if (cloudWarning != null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text('Unexpected error: $e'),
-            backgroundColor: Colors.redAccent),
+        SnackBar(content: Text(cloudWarning), backgroundColor: Colors.orange),
       );
-    } finally {
-      if (mounted) setState(() => _saving = false);
     }
   }
 
@@ -186,19 +177,36 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     const SizedBox(height: 10),
                     ...kProfessions.map((p) => _professionCard(p)),
                     const SizedBox(height: 24),
-                    _sectionLabel("WHAT INTERESTS YOU (pick 2+)"),
-                    const SizedBox(height: 10),
-                    GlassPanel(
-                      padding: const EdgeInsets.all(16),
-                      child: Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: kDomainSuggestions
-                            .map((d) => _domainChip(d))
-                            .toList(),
-                      ),
+                    _sectionLabel("WHAT INTERESTS YOU (pick a few)"),
+                    const SizedBox(height: 4),
+                    Text(
+                      "Scroll through every field — tech, science, sports, money, lifestyle & more.",
+                      style: TextStyle(color: glintText(context, 0.5), fontSize: 12),
                     ),
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 10),
+                    // Grouped so users across ALL interests find themselves.
+                    ...kInterestGroups.entries.map((group) => Padding(
+                          padding: const EdgeInsets.only(bottom: 14),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(group.key.toUpperCase(),
+                                  style: TextStyle(
+                                      color: glintAccent(context),
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w800,
+                                      letterSpacing: 1.0)),
+                              const SizedBox(height: 8),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children:
+                                    group.value.map((d) => _domainChip(d)).toList(),
+                              ),
+                            ],
+                          ),
+                        )),
+                    const SizedBox(height: 16),
                     _sectionLabel("TELL GLINT AI WHAT YOU'RE INTO"),
                     const SizedBox(height: 6),
                     Text(

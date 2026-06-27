@@ -142,16 +142,33 @@ class RootGateState extends State<RootGate> {
         unawaited(CloudSyncService.instance
             .pullToLocalIfMissing()
             .then((_) => notifySubsChanged()));
-        return StreamBuilder<UserProfile?>(
-          stream: UserProfileService.instance.streamMyProfile(),
-          builder: (context, profSnap) {
-            if (profSnap.connectionState == ConnectionState.waiting) {
-              return const MainShell();
-            }
-            if (profSnap.data == null) {
-              return const OnboardingScreen();
-            }
-            return const MainShell();
+        // Re-evaluate when onboarding completes locally (profileGateTicker).
+        return ValueListenableBuilder<int>(
+          valueListenable: profileGateTicker,
+          builder: (context, _, __) {
+            return StreamBuilder<UserProfile?>(
+              stream: UserProfileService.instance.streamMyProfile(),
+              builder: (context, profSnap) {
+                // Cloud profile present → straight in.
+                if (profSnap.data != null) return const MainShell();
+                // No cloud profile yet — check the local "onboarded" flag so a
+                // denied/slow Firestore write doesn't trap the user.
+                return FutureBuilder<bool>(
+                  future: UserProfileService.instance.isOnboardedLocally(),
+                  builder: (context, localSnap) {
+                    if (localSnap.connectionState == ConnectionState.waiting &&
+                        profSnap.connectionState == ConnectionState.waiting) {
+                      return const MainShell();
+                    }
+                    if (localSnap.data == true) return const MainShell();
+                    if (profSnap.connectionState == ConnectionState.waiting) {
+                      return const MainShell();
+                    }
+                    return const OnboardingScreen();
+                  },
+                );
+              },
+            );
           },
         );
       },

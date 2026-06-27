@@ -8,6 +8,12 @@
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+/// Bumped after onboarding completes so RootGate re-evaluates and leaves the
+/// onboarding screen even when the Firestore write is slow/denied.
+final ValueNotifier<int> profileGateTicker = ValueNotifier<int>(0);
 
 /// Source categories — each fetched item carries one. Profession picks
 /// determine which categories show in Discover.
@@ -94,28 +100,52 @@ const List<Profession> kProfessions = [
   ),
 ];
 
-/// Topic suggestions shown in the onboarding domain picker. User can
-/// multi-select; selected ones are auto-pinned as topic subscriptions.
-const List<String> kDomainSuggestions = [
-  'Artificial Intelligence',
-  'Machine Learning',
-  'Web Development',
-  'Mobile Development',
-  'DevOps & Cloud',
-  'Data Science',
-  'Cybersecurity',
-  'Blockchain & Web3',
-  'Hardware & IoT',
-  'Startups',
-  'Product Management',
-  'Design & UX',
-  'EdTech',
-  'HealthTech',
-  'FinTech',
-  'Game Development',
-  'Quantum Computing',
-  'Robotics',
-];
+/// Topic suggestions shown in the onboarding domain picker, grouped by
+/// field so users across ALL interests find themselves — not just tech.
+/// Multi-select; selected ones auto-pin as topic subscriptions. Users can
+/// also type their own in the free-text box.
+const Map<String, List<String>> kInterestGroups = {
+  'Tech & AI': [
+    'Artificial Intelligence', 'Machine Learning', 'Data Science',
+    'Web Development', 'Mobile Development', 'DevOps & Cloud',
+    'Cybersecurity', 'Blockchain & Web3', 'Quantum Computing',
+    'Robotics', 'Hardware & IoT', 'Game Development',
+  ],
+  'Science': [
+    'Space & Astronomy', 'Physics', 'Biology', 'Chemistry',
+    'Neuroscience', 'Climate & Environment', 'Medicine', 'Genetics',
+    'Mathematics', 'Psychology',
+  ],
+  'Business & Money': [
+    'Startups', 'Venture Capital', 'Stock Market', 'Crypto',
+    'Economy', 'Personal Finance', 'Real Estate', 'Marketing',
+    'Product Management', 'Entrepreneurship',
+  ],
+  'World & Society': [
+    'World News', 'Politics', 'Geopolitics', 'Law',
+    'Education', 'Social Issues', 'History', 'Philosophy',
+  ],
+  'Lifestyle': [
+    'Health & Fitness', 'Food & Cooking', 'Travel', 'Fashion',
+    'Design & UX', 'Photography', 'Productivity', 'Parenting',
+  ],
+  'Sports': [
+    'Football / Soccer', 'Cricket', 'Basketball', 'Formula 1',
+    'Tennis', 'Esports', 'NFL', 'Cycling',
+  ],
+  'Entertainment': [
+    'Movies & TV', 'Music', 'Gaming', 'Books',
+    'Anime', 'Celebrities', 'Streaming', 'Art',
+  ],
+  'Cars & Tech Gear': [
+    'Cars', 'Electric Vehicles', 'Motorcycles', 'Gadgets',
+    'Smartphones', 'Aviation', 'Drones',
+  ],
+};
+
+/// Flat list of all suggestions (used where a single list is handy).
+final List<String> kDomainSuggestions =
+    kInterestGroups.values.expand((e) => e).toList();
 
 class CountryOpt {
   final String code;
@@ -220,6 +250,25 @@ class UserProfileService {
         return p;
       });
     }
+  }
+
+  /// Per-uid local "onboarding finished" flag. The cloud profile is the
+  /// source of truth, but this lets the user INTO the app even if the
+  /// Firestore write was denied (rules not published) or offline — so they
+  /// never get stuck on the onboarding screen.
+  Future<bool> isOnboardedLocally() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return false;
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool('onboarded_$uid') ?? false;
+  }
+
+  Future<void> markOnboardedLocally(UserProfile profile) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('onboarded_$uid', true);
+    _cached = profile; // so feed personalization has it immediately
   }
 
   Future<UserProfile?> loadOnce() async {
