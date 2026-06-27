@@ -103,41 +103,42 @@ async function handleTts(request, env) {
   const text = (body.text || '').toString().slice(0, 9000);
   const voice = (body.voice || 'Celeste-PlayAI').toString();
   const ttsProvider = (body.ttsProvider || 'auto').toString().toLowerCase();
-  const azureRegion = (body.azureRegion || 'eastus').toString();
+  const azureRegion = env.AZURE_SPEECH_REGION || body.azureRegion || 'eastus';
   
   if (!text.trim()) return json({ error: 'no text' }, 400);
 
-  // Try preferred provider first, then fallback chain
-  let audio = null;
-  
-  if ((ttsProvider === 'groq' || ttsProvider === 'auto') && env.GROQ_KEY) {
-    audio = await groqTts(env.GROQ_KEY, text, voice);
-    if (audio) {
-      return new Response(audio, {
-        headers: { 'Content-Type': 'audio/wav', 'X-TTS-Provider': 'groq', ...cors() },
-      });
+  // Define the chain of TTS providers to try.
+  const providerChain = [
+    {
+      name: 'groq',
+      enabled: env.GROQ_KEY,
+      handler: () => groqTts(env.GROQ_KEY, text, voice),
+      contentType: 'audio/wav',
+    },
+    {
+      name: 'google',
+      enabled: env.GOOGLE_CLOUD_KEY,
+      handler: () => googleCloudTts(env.GOOGLE_CLOUD_KEY, text, voice),
+      contentType: 'audio/mpeg',
+    },
+    {
+      name: 'azure',
+      enabled: env.AZURE_SPEECH_KEY,
+      handler: () => azureTts(env.AZURE_SPEECH_KEY, azureRegion, text, voice),
+      contentType: 'audio/mpeg',
+    },
+  ];
+
+  for (const provider of providerChain) {
+    if (provider.enabled && (ttsProvider === 'auto' || ttsProvider === provider.name)) {
+      const audio = await provider.handler();
+      if (audio) {
+        return new Response(audio, { headers: { 'Content-Type': provider.contentType, 'X-TTS-Provider': provider.name, ...cors() } });
+      }
     }
   }
-  
-  if ((ttsProvider === 'google' || ttsProvider === 'auto') && env.GOOGLE_CLOUD_KEY) {
-    audio = await googleCloudTts(env.GOOGLE_CLOUD_KEY, text, voice);
-    if (audio) {
-      return new Response(audio, {
-        headers: { 'Content-Type': 'audio/mpeg', 'X-TTS-Provider': 'google', ...cors() },
-      });
-    }
-  }
-  
-  if ((ttsProvider === 'azure' || ttsProvider === 'auto') && env.AZURE_SPEECH_KEY) {
-    audio = await azureTts(env.AZURE_SPEECH_KEY, azureRegion, text, voice);
-    if (audio) {
-      return new Response(audio, {
-        headers: { 'Content-Type': 'audio/mpeg', 'X-TTS-Provider': 'azure', ...cors() },
-      });
-    }
-  }
-  
-  return json({ error: 'all tts providers failed', tried: [ttsProvider] }, 502);
+
+  return json({ error: 'all tts providers failed' }, 502);
 }
 
 async function groqTts(key, text, voice) {

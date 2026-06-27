@@ -3,7 +3,7 @@ description: Know the undiscovered you
 publish_to: 'none' # This is the app, not a pub.dev package. Leave as-is.
 # version: x.y.z+code — bump +code (versionCode) for every Play Store
 # upload; bump x.y.z (versionName) for user-visible releases.
-version: 1.0.3+12
+version: 1.0.3+13
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
