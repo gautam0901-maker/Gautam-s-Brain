@@ -57,12 +57,10 @@ void main() async {
   // pick up new pinned topics.
   unawaited(() async {
     try {
-      await NotificationService.instance.init();
       final subs = await loadSubscriptions();
-      await NotificationService.instance.autoEnableOnFirstLaunch(subs);
-      if (await NotificationService.instance.isEnabled()) {
-        await NotificationService.instance.schedule(subs);
-      }
+      // ensureRunning requests permission if needed, enables, and schedules.
+      // No permanent gating — fixes users who were stuck with notifs off.
+      await NotificationService.instance.ensureRunning(subs);
     } catch (_) {}
   }());
   runApp(const GlintApp());

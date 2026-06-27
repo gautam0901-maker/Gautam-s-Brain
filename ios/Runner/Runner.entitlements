@@ -2,15 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Required for "Sign in with Apple". Also enable the capability in the
-	     Apple Developer portal for your App ID. -->
+	<!-- Required for "Sign in with Apple". The matching capability is enabled
+	     on the App ID in the Apple Developer portal. -->
 	<key>com.apple.developer.applesignin</key>
 	<array>
 		<string>Default</string>
 	</array>
-	<!-- Push notifications (APNs). Set to "production" for App Store builds.
-	     Codemagic/Xcode usually manage this automatically. -->
-	<key>aps-environment</key>
-	<string>development</string>
+	<!-- NOTE: no aps-environment here. Glint's daily notifications are LOCAL
+	     (scheduled on-device) and do NOT need the Push Notifications
+	     capability. Only add aps-environment if you later use remote push
+	     (FCM) or iOS phone-auth — and enable Push on the App ID first. -->
 </dict>
 </plist>

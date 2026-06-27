@@ -22,6 +22,7 @@ import '../services/auth_service.dart';
 import '../services/cloud_sync_service.dart';
 import '../services/deep_link_service.dart';
 import '../services/feed_cache.dart';
+import '../services/notification_service.dart';
 import '../services/personalization_service.dart';
 import '../services/tts_service.dart';
 import '../services/user_profile_service.dart';
@@ -2234,30 +2235,27 @@ class _TechFeedScreenState extends State<TechFeedScreen> {
 
   /// Compact swipe toast with UNDO — short window (1.8s) so it doesn't
   /// camp on the screen. Floats above the nav bar; auto-dismissable.
+  /// Custom animated swipe toast — a glowing glass pill that springs up
+  /// just above the nav bar, holds ~750ms, then slides away. Far nicer than
+  /// the old centered black SnackBar, and snappy. Self-removing + crash-safe.
   void _showSwipeUndo({required Map<String, String> paper, required bool wasSave}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).removeCurrentSnackBar();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          wasSave ? '✓ Saved' : '✕ Skipped',
-          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-        ),
-        // 1.8s = quick toast that doesn't camp.
-        duration: const Duration(milliseconds: 1800),
-        behavior: SnackBarBehavior.floating,
-        // Margin lifts it above the floating nav bar; narrow horizontal
-        // padding keeps it compact.
-        margin: const EdgeInsets.only(bottom: 110, left: 80, right: 80),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        action: SnackBarAction(
-          label: 'UNDO',
-          textColor: glintAccent(context),
-          onPressed: () => _undoSwipe(paper, wasSave),
-        ),
+    final overlay = Overlay.of(context);
+    bool removed = false;
+    OverlayEntry? entry;
+    void done() {
+      if (removed) return;
+      removed = true;
+      entry?.remove();
+    }
+    entry = OverlayEntry(
+      builder: (_) => _SwipeToast(
+        wasSave: wasSave,
+        onUndo: () => _undoSwipe(paper, wasSave),
+        onDone: done,
       ),
     );
+    overlay.insert(entry);
   }
 
   Future<void> _undoSwipe(Map<String, String> paper, bool wasSave) async {
@@ -3665,17 +3663,28 @@ class _DetailScreenState extends State<DetailScreen> {
                   ),
                 ),
               ],
-              flexibleSpace: FlexibleSpaceBar(
-                titlePadding: const EdgeInsets.only(left: 20, bottom: 16, right: 20),
-                // Always white over the cover image (image is dark-tinted by
-                // the scrim); FlexibleSpaceBar handles the collapse fade.
-                title: const Text("Intelligence Report",
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: Colors.white)),
-                background: _CoverImage(
-                  imageUrl: widget.paper['image'] ?? '',
-                  articleUrl: widget.paper['url'] ?? '',
-                  fallbackColors: widget.backgroundColors,
-                ),
+              flexibleSpace: LayoutBuilder(
+                builder: (context, constraints) {
+                  // Detect collapse so the title is WHITE over the photo but
+                  // switches to the theme text color when pinned to the
+                  // (light/dark) bar — otherwise white-on-white is invisible.
+                  final settled =
+                      MediaQuery.of(context).padding.top + kToolbarHeight + 8;
+                  final collapsed = constraints.biggest.height <= settled;
+                  return FlexibleSpaceBar(
+                    titlePadding: const EdgeInsets.only(left: 20, bottom: 16, right: 20),
+                    title: Text("Intelligence Report",
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 18,
+                            color: collapsed ? glintText(context) : Colors.white)),
+                    background: _CoverImage(
+                      imageUrl: widget.paper['image'] ?? '',
+                      articleUrl: widget.paper['url'] ?? '',
+                      fallbackColors: widget.backgroundColors,
+                    ),
+                  );
+                },
               ),
             ),
             SliverToBoxAdapter(
@@ -4746,6 +4755,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                     const Divider(height: 1, color: Colors.white12, indent: 56),
                     _settingsTile(
+                      icon: Icons.notifications_active_outlined,
+                      title: 'Daily Notifications',
+                      subtitle: 'Turn on + send a test notification now',
+                      onTap: _setupNotifications,
+                    ),
+                    const Divider(height: 1, color: Colors.white12, indent: 56),
+                    _settingsTile(
                       icon: Icons.palette_outlined,
                       title: 'Appearance',
                       subtitle: _themeSubtitle(themeModeNotifier.value),
@@ -5086,6 +5102,49 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
     // Affinity may have changed if user un-skipped items.
     await PersonalizationService.instance.refresh();
+  }
+
+  /// Enable daily notifications + immediately fire a test one so the user
+  /// can confirm delivery without waiting for the 8am/1pm/6pm slots.
+  Future<void> _setupNotifications() async {
+    final subs = await loadSubscriptions();
+    final ok = await NotificationService.instance
+        .userSetEnabled(true, subs);
+    if (!mounted) return;
+    if (!ok) {
+      // Permission denied → can only be fixed in the OS Settings.
+      showDialog(
+        context: context,
+        builder: (dctx) => AlertDialog(
+          backgroundColor: Theme.of(dctx).brightness == Brightness.dark
+              ? const Color(0xFF0C1622)
+              : Colors.white,
+          title: Text('Notifications are off',
+              style: TextStyle(color: glintText(dctx))),
+          content: Text(
+            'Glint needs notification permission. Open your phone Settings → '
+            'Notifications → Glint and turn them on, then come back.',
+            style: TextStyle(color: glintText(dctx, 0.75), fontSize: 14),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dctx),
+              child: Text('OK', style: TextStyle(color: glintAccent(dctx))),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+    // Fire a test notification right away.
+    await NotificationService.instance.showTestNotification();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content: Text(
+          '✅ Notifications on — a test was just sent. You\'ll get 3 nudges a day.'),
+      backgroundColor: Colors.green,
+      duration: Duration(seconds: 4),
+    ));
   }
 
   /// Manage muted publishers — unmute by tapping the ×. Mutes are added
@@ -5683,6 +5742,132 @@ class _QuoteCardPainter {
     final paragraph = builder.build()
       ..layout(ui.ParagraphConstraints(width: maxWidth));
     canvas.drawParagraph(paragraph, at);
+  }
+}
+
+// ============================================================
+// SWIPE TOAST — animated glass pill shown after a swipe. Springs up
+// above the nav bar, holds briefly, slides away. Crash-safe self-removal.
+// ============================================================
+class _SwipeToast extends StatefulWidget {
+  final bool wasSave;
+  final VoidCallback onUndo;
+  final VoidCallback onDone;
+  const _SwipeToast(
+      {required this.wasSave, required this.onUndo, required this.onDone});
+  @override
+  State<_SwipeToast> createState() => _SwipeToastState();
+}
+
+class _SwipeToastState extends State<_SwipeToast>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 240));
+  bool _undone = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _c.forward();
+    // Spring in (240ms) → hold (750ms) → slide out (240ms) → remove.
+    Future.delayed(const Duration(milliseconds: 990), () async {
+      if (!mounted) return;
+      await _c.reverse();
+      widget.onDone();
+    });
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final save = widget.wasSave;
+    final color = save ? const Color(0xFF22C55E) : const Color(0xFF60A5FA);
+    final icon = save ? Icons.bookmark_added_rounded : Icons.swipe_left_rounded;
+    final label = save ? 'Saved to Vault' : 'Skipped';
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final curved = CurvedAnimation(
+        parent: _c, curve: Curves.easeOutBack, reverseCurve: Curves.easeIn);
+
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 98, // sits just above the floating nav bar
+      child: SafeArea(
+        top: false,
+        child: Center(
+          child: AnimatedBuilder(
+            animation: curved,
+            builder: (context, child) {
+              final v = curved.value.clamp(0.0, 1.0);
+              return Opacity(
+                opacity: v,
+                child: Transform.translate(
+                  offset: Offset(0, (1 - v) * 26),
+                  child: Transform.scale(scale: 0.88 + v * 0.12, child: child),
+                ),
+              );
+            },
+            child: Material(
+              color: Colors.transparent,
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(16, 11, 14, 11),
+                decoration: BoxDecoration(
+                  color: isDark
+                      ? const Color(0xFF0E1A24).withOpacity(0.96)
+                      : Colors.white.withOpacity(0.97),
+                  borderRadius: BorderRadius.circular(26),
+                  border: Border.all(color: color.withOpacity(0.55), width: 1.5),
+                  boxShadow: [
+                    BoxShadow(
+                      color: color.withOpacity(0.35),
+                      blurRadius: 22,
+                      spreadRadius: 1,
+                    ),
+                    BoxShadow(
+                      color: Colors.black.withOpacity(isDark ? 0.4 : 0.12),
+                      blurRadius: 16,
+                      offset: const Offset(0, 6),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(icon, color: color, size: 21),
+                    const SizedBox(width: 9),
+                    Text(label,
+                        style: TextStyle(
+                            color: glintText(context),
+                            fontWeight: FontWeight.w700,
+                            fontSize: 14)),
+                    const SizedBox(width: 14),
+                    GestureDetector(
+                      onTap: () {
+                        if (_undone) return;
+                        _undone = true;
+                        HapticFeedback.lightImpact();
+                        widget.onUndo();
+                        widget.onDone();
+                      },
+                      child: Text('Undo',
+                          style: TextStyle(
+                              color: glintAccent(context),
+                              fontWeight: FontWeight.w800,
+                              fontSize: 13)),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 

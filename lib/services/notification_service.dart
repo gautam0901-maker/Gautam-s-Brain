@@ -19,7 +19,7 @@ class NotificationService {
   static const _kChannelId = 'glint_daily_nudges';
   static const _kChannelName = 'Daily nudges';
   static const _kEnabledKey = 'notif_enabled';
-  static const _kFirstAskKey = 'notif_first_ask_done';
+  static const _kUserOptedOutKey = 'notif_user_opted_out';
 
   // 8AM = personalized morning brief; 1PM + 6PM = topical nudges.
   static const int _kMorningHour = 8;
@@ -86,16 +86,66 @@ class NotificationService {
     await schedule(topics);
   }
 
-  /// First-launch bootstrap. Called once from main(); auto-asks for
-  /// permission and enables 3/day nudges. Subsequent launches do nothing
-  /// here — schedule() in main() handles topic refresh + reboot recovery.
-  Future<void> autoEnableOnFirstLaunch(List<String> topics) async {
+  /// Called on every launch. If notifications aren't enabled yet, request
+  /// permission and enable. If already enabled, just reschedule (survives
+  /// reboots + picks up new topics). Crucially this does NOT gate forever
+  /// on a flag — the old version set "asked=true" before permission was
+  /// granted, which permanently stuck users who couldn't get the prompt.
+  Future<void> ensureRunning(List<String> topics) async {
+    await init();
+    if (await isEnabled()) {
+      await schedule(topics);
+      return;
+    }
+    // Don't re-prompt if the user explicitly turned it off in Settings.
     final prefs = await SharedPreferences.getInstance();
-    if (prefs.getBool(_kFirstAskKey) ?? false) return;
-    await prefs.setBool(_kFirstAskKey, true);
+    if (prefs.getBool(_kUserOptedOutKey) ?? false) return;
     final granted = await requestPermission();
-    if (!granted) return;
+    if (granted) {
+      await setEnabled(true, topics: topics);
+    }
+  }
+
+  /// Fires a notification RIGHT NOW so the user can verify delivery without
+  /// waiting for the 8am/1pm/6pm slots. Used by the Settings "Test" button.
+  Future<bool> showTestNotification() async {
+    await init();
+    final granted = await requestPermission();
+    if (!granted) return false;
+    await _plugin.show(
+      99999,
+      '🔔 Glint notifications are on',
+      "You'll get fresh drops about your topics through the day.",
+      NotificationDetails(
+        android: AndroidNotificationDetails(
+          _kChannelId,
+          _kChannelName,
+          importance: Importance.high,
+          priority: Priority.high,
+        ),
+        iOS: const DarwinNotificationDetails(
+          presentAlert: true,
+          presentBadge: true,
+          presentSound: true,
+        ),
+      ),
+    );
+    return true;
+  }
+
+  /// User toggle from Settings. Off → cancel + remember the opt-out so we
+  /// don't auto-re-enable. On → request + enable.
+  Future<bool> userSetEnabled(bool on, List<String> topics) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kUserOptedOutKey, !on);
+    if (!on) {
+      await setEnabled(false);
+      return true;
+    }
+    final granted = await requestPermission();
+    if (!granted) return false;
     await setEnabled(true, topics: topics);
+    return true;
   }
 
   /// Schedules the next 7 days of nudges. Called on app launch + after the
@@ -152,6 +202,12 @@ class NotificationService {
               _kChannelName,
               importance: Importance.high,
               priority: Priority.high,
+            ),
+            // iOS needs Darwin details or scheduled notifications never show.
+            iOS: const DarwinNotificationDetails(
+              presentAlert: true,
+              presentBadge: true,
+              presentSound: true,
             ),
           ),
           androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
