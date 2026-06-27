@@ -55,12 +55,25 @@ class TtsService {
     'Atlas (deep male)': 'Atlas-PlayAI',
     'Indigo (soft neutral)': 'Indigo-PlayAI',
   };
+  /// Available TTS cloud providers. Cloud mode now tries multiple.
+  static const Map<String, String> kTtsProviders = {
+    'Groq PlayAI (paid, best)': 'groq',
+    'Google Cloud (free tier)': 'google',
+    'Azure Speech (free tier)': 'azure',
+    'Auto-failover': 'auto',
+  };
 
+  static const String _kTtsProviderKey = 'tts_provider';
+  static const String _kAzureRegionKey = 'tts_azure_region';
+  String ttsProvider = 'auto'; // groq | google | azure | auto
+  String azureRegion = 'eastus'; // Azure region (eastus, westeurope, etc.)
   Future<void> loadAudioPrefs() async {
     try {
       final p = await SharedPreferences.getInstance();
       cloudVoice = p.getString(_kCloudVoiceKey) ?? cloudVoice;
       cloudEnabled = p.getBool(_kCloudEnabledKey) ?? true;
+      ttsProvider = p.getString(_kTtsProviderKey) ?? 'auto';
+      azureRegion = p.getString(_kAzureRegionKey) ?? 'eastus';
     } catch (_) {}
   }
 
@@ -74,6 +87,18 @@ class TtsService {
     cloudEnabled = on;
     final p = await SharedPreferences.getInstance();
     await p.setBool(_kCloudEnabledKey, on);
+  }
+
+  Future<void> setTtsProvider(String provider) async {
+    ttsProvider = provider;
+    final p = await SharedPreferences.getInstance();
+    await p.setString(_kTtsProviderKey, provider);
+  }
+
+  Future<void> setAzureRegion(String region) async {
+    azureRegion = region;
+    final p = await SharedPreferences.getInstance();
+    await p.setString(_kAzureRegionKey, region);
   }
 
   // Playlist machinery — one ConcatenatingAudioSource holds all generated
@@ -133,16 +158,24 @@ class TtsService {
       final resp = await http
           .post(Uri.parse(_workerTtsUrl),
               headers: {'Content-Type': 'application/json'},
-              body: jsonEncode({'text': text, 'voice': cloudVoice}))
+              body: jsonEncode({
+                'text': text,
+                'voice': cloudVoice,
+                'ttsProvider': ttsProvider, // auto, groq, google, or azure
+                'azureRegion': azureRegion, // for azure fallback
+              }))
           .timeout(const Duration(seconds: 35));
       final ct = resp.headers['content-type'] ?? '';
-      if (resp.statusCode != 200 ||
-          !ct.contains('audio') ||
-          resp.bodyBytes.length < 1000) {
+      if (resp.statusCode != 200 || resp.bodyBytes.length < 1000) {
+        return null;
+      }
+      // Support both wav (Groq) and mp3 (Google, Azure)
+      if (!ct.contains('audio')) {
         return null;
       }
       final dir = await getTemporaryDirectory();
-      final f = File('${dir.path}/glint_tts_${text.hashCode}.wav');
+      final ext = ct.contains('mp3') ? 'mp3' : 'wav';
+      final f = File('${dir.path}/glint_tts_${text.hashCode}.$ext');
       await f.writeAsBytes(resp.bodyBytes);
       return f;
     } catch (_) {

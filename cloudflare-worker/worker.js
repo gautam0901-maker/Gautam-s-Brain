@@ -4,12 +4,15 @@
 // app user gets AI through your single key with zero setup. The key never
 // ships in the app and can't be extracted from the APK.
 //
-// Failover chain: Gemini 2.0 Flash → Cerebras → Groq. If one is busy /
-// out of quota / errors, the next answers. The app falls back to keyless
-// Pollinations only if this whole worker is unreachable.
+// TTS Failover chain (natural voices):
+//   1) Groq PlayAI (paid, premium quality)
+//   2) Google Cloud TTS (free tier: 1M/month, natural)
+//   3) Azure Speech (free tier: 5M/month, natural)
+//   4) Device flutter_tts (fallback, robotic)
 //
 // Deploy:  wrangler deploy
-// Secrets: wrangler secret put GEMINI_KEY   (then CEREBRAS_KEY, GROQ_KEY)
+// Secrets: wrangler secret put GROQ_KEY GOOGLE_CLOUD_KEY AZURE_SPEECH_KEY
+// AI Secrets: wrangler secret put GEMINI_KEY CEREBRAS_KEY
 
 export default {
   async fetch(request, env) {
@@ -82,11 +85,10 @@ function cors() {
   };
 }
 
-// ── 🔊 Text-to-speech: Groq PlayAI TTS → WAV bytes ────────────────────────
-// POST /tts  { text, voice }  → audio/wav (or 502 JSON if it fails).
-// The app falls back to the device voice when this returns non-audio.
-// NOTE: enable the `playai-tts` model once in the Groq console (accept terms)
-// or every call 400s. Free tier has per-minute limits — fine for one user.
+// ── 🔊 Text-to-speech: Multi-provider TTS with fallover ──────────────────
+// POST /tts  { text, voice, ttsProvider, azureRegion }  → audio/wav or mp3
+// Provider order: groq → google → azure → error
+// The app falls back to device voice when this returns non-audio.
 async function handleTts(request, env) {
   if (request.method !== 'POST') return json({ error: 'POST only' }, 405);
   if (env.APP_TOKEN && request.headers.get('x-glint-token') !== env.APP_TOKEN) {
@@ -100,17 +102,42 @@ async function handleTts(request, env) {
   }
   const text = (body.text || '').toString().slice(0, 9000);
   const voice = (body.voice || 'Celeste-PlayAI').toString();
+  const ttsProvider = (body.ttsProvider || 'auto').toString().toLowerCase();
+  const azureRegion = (body.azureRegion || 'eastus').toString();
+  
   if (!text.trim()) return json({ error: 'no text' }, 400);
 
-  if (env.GROQ_KEY) {
-    const audio = await groqTts(env.GROQ_KEY, text, voice);
+  // Try preferred provider first, then fallback chain
+  let audio = null;
+  
+  if ((ttsProvider === 'groq' || ttsProvider === 'auto') && env.GROQ_KEY) {
+    audio = await groqTts(env.GROQ_KEY, text, voice);
     if (audio) {
       return new Response(audio, {
-        headers: { 'Content-Type': 'audio/wav', ...cors() },
+        headers: { 'Content-Type': 'audio/wav', 'X-TTS-Provider': 'groq', ...cors() },
       });
     }
   }
-  return json({ error: 'tts failed' }, 502);
+  
+  if ((ttsProvider === 'google' || ttsProvider === 'auto') && env.GOOGLE_CLOUD_KEY) {
+    audio = await googleCloudTts(env.GOOGLE_CLOUD_KEY, text, voice);
+    if (audio) {
+      return new Response(audio, {
+        headers: { 'Content-Type': 'audio/mpeg', 'X-TTS-Provider': 'google', ...cors() },
+      });
+    }
+  }
+  
+  if ((ttsProvider === 'azure' || ttsProvider === 'auto') && env.AZURE_SPEECH_KEY) {
+    audio = await azureTts(env.AZURE_SPEECH_KEY, azureRegion, text, voice);
+    if (audio) {
+      return new Response(audio, {
+        headers: { 'Content-Type': 'audio/mpeg', 'X-TTS-Provider': 'azure', ...cors() },
+      });
+    }
+  }
+  
+  return json({ error: 'all tts providers failed', tried: [ttsProvider] }, 502);
 }
 
 async function groqTts(key, text, voice) {
@@ -135,6 +162,103 @@ async function groqTts(key, text, voice) {
   } catch {
     return null;
   }
+}
+
+// Google Cloud Text-to-Speech (free tier: 1M requests/month)
+// Maps PlayAI voice names to Google Cloud voices with matching emotions
+async function googleCloudTts(key, text, voice) {
+  try {
+    const googleVoiceMap = {
+      'Celeste-PlayAI': { name: 'en-US-Neural2-C', gender: 'FEMALE' },   // warm female
+      'Arista-PlayAI': { name: 'en-US-Neural2-A', gender: 'FEMALE' },    // bright female
+      'Quinn-PlayAI': { name: 'en-US-Neural2-E', gender: 'FEMALE' },     // calm neutral
+      'Fritz-PlayAI': { name: 'en-US-Neural2-B', gender: 'MALE' },       // clear male
+      'Atlas-PlayAI': { name: 'en-US-Neural2-D', gender: 'MALE' },       // deep male
+      'Indigo-PlayAI': { name: 'en-US-Neural2-F', gender: 'FEMALE' },    // soft neutral
+    };
+    
+    const voiceConfig = googleVoiceMap[voice] || googleVoiceMap['Celeste-PlayAI'];
+    
+    const resp = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${key}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        input: { text },
+        voice: {
+          languageCode: 'en-US',
+          name: voiceConfig.name,
+          ssmlGender: voiceConfig.gender,
+        },
+        audioConfig: {
+          audioEncoding: 'MP3',
+          pitch: 0,
+          speakingRate: 0.95, // slightly slower for readability
+        },
+      }),
+      signal: AbortSignal.timeout(20000),
+    });
+    
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    if (data.audioContent) {
+      const buf = Uint8Array.from(atob(data.audioContent), c => c.charCodeAt(0));
+      return buf.buffer;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// Microsoft Azure Speech Services (free tier: 5M requests/month)
+// Uses matching voice personalities to Google Cloud for consistency
+async function azureTts(key, region, text, voice) {
+  try {
+    const azureVoiceMap = {
+      'Celeste-PlayAI': 'en-US-AmberNeural',      // warm, mature female
+      'Arista-PlayAI': 'en-US-JennyNeural',       // bright, youthful female
+      'Quinn-PlayAI': 'en-US-ElizaNeural',        // calm, clear female
+      'Fritz-PlayAI': 'en-US-GuyNeural',          // clear, professional male
+      'Atlas-PlayAI': 'en-US-EricNeural',         // deep, calm male
+      'Indigo-PlayAI': 'en-US-CoraNeural',        // soft, natural female
+    };
+    
+    const voiceName = azureVoiceMap[voice] || 'en-US-AmberNeural';
+    
+    const ssml = `<speak version='1.0' xml:lang='en-US'>
+      <voice name='${voiceName}'>
+        <prosody pitch='0%' rate='0.95'>${escapeXml(text)}</prosody>
+      </voice>
+    </speak>`;
+    
+    const resp = await fetch(
+      `https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`,
+      {
+        method: 'POST',
+        headers: {
+          'Ocp-Apim-Subscription-Key': key,
+          'Content-Type': 'application/ssml+xml',
+          'X-Microsoft-OutputFormat': 'audio-16khz-32kbitrate-mono-mp3',
+        },
+        body: ssml,
+        signal: AbortSignal.timeout(20000),
+      }
+    );
+    
+    if (!resp.ok) return null;
+    return await resp.arrayBuffer();
+  } catch {
+    return null;
+  }
+}
+
+function escapeXml(str) {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
 }
 
 function json(obj, status = 200) {
